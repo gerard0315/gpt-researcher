@@ -27,6 +27,8 @@ from server.server_utils import (
     execute_multi_agents, handle_websocket_communication
 )
 
+from server import db
+
 from server.websocket_manager import run_agent
 from utils import write_md_to_word, write_md_to_pdf
 from gpt_researcher.utils.enum import Tone
@@ -84,7 +86,8 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning(f"Frontend directory not found: {frontend_path}")
     
-    logger.info("GPT Researcher API ready - local mode (no database persistence)")
+    logger.info("GPT Researcher API ready - local mode")
+    db.init_db()
     yield
     # Shutdown
     logger.info("Research API shutting down")
@@ -159,16 +162,17 @@ async def read_report(request: Request, research_id: str):
 # Simplified API routes - no database persistence
 @app.get("/api/reports")
 async def get_all_reports(report_ids: str = None):
-    """Get research reports - returns empty list since no database."""
-    logger.debug("No database configured - returning empty reports list")
-    return {"reports": []}
+    """Get research reports."""
+    return {"reports": db.get_all_researches()}
 
 
 @app.get("/api/reports/{research_id}")
 async def get_report_by_id(research_id: str):
-    """Get a specific research report by ID - no database configured."""
-    logger.debug(f"No database configured - cannot retrieve report {research_id}")
-    raise HTTPException(status_code=404, detail="Report not found")
+    """Get a specific research report by ID."""
+    report = db.get_research(research_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {"report": report}
 
 
 @app.post("/api/reports")
@@ -362,6 +366,6 @@ async def update_report(research_id: str, request: Request):
 
 @app.delete("/api/reports/{research_id}")
 async def delete_report(research_id: str):
-    """Delete a specific research report by ID - no database configured."""
-    logger.debug(f"Delete requested for report {research_id} - no database configured, nothing to delete")
+    """Delete a specific research report by ID."""
+    db.delete_research(research_id)
     return {"success": True, "id": research_id}

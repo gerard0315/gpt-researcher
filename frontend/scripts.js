@@ -405,100 +405,53 @@ const GPTResearcher = (() => {
     }
   }
 
-  // Load conversation history from cookie
-  const loadConversationHistory = () => {
+  // Load conversation history from API
+  const loadConversationHistory = async () => {
     try {
-      const storedHistory = getCookie('conversationHistory');
-      if (storedHistory && storedHistory.trim() !== '') {
-        try {
-          const parsedHistory = JSON.parse(storedHistory);
-          if (Array.isArray(parsedHistory)) {
-            conversationHistory = parsedHistory;
-            console.debug('Loaded research history from storage:', conversationHistory);
-            console.log('Loaded research history:', conversationHistory.length, 'items');
-          } else {
-            console.warn('History storage does not contain an array');
-            conversationHistory = [];
-            deleteCookie('conversationHistory');
-          }
-        } catch (jsonError) {
-          console.error('Invalid JSON in history storage:', jsonError);
-          conversationHistory = [];
-          deleteCookie('conversationHistory');
-        }
+      const response = await fetch('/api/reports');
+      const data = await response.json();
+      if (data.reports) {
+        conversationHistory = data.reports;
+        console.debug('Loaded research history from API:', conversationHistory);
       } else {
-        console.log('No research history found in storage');
         conversationHistory = [];
       }
     } catch (error) {
-      console.error('Error loading research history from storage:', error);
+      console.error('Error loading research history from API:', error);
       conversationHistory = [];
-      // If JSON parsing fails, delete the corrupt cookie
-      deleteCookie('conversationHistory');
+      showToast('Error loading history from server.');
     }
 
     // Force render after loading
     renderHistoryEntries();
   }
 
-  // Save conversation history to cookie
+  // Save conversation history (no-op: server handles persistence now)
   const saveConversationHistory = () => {
-    try {
-      if (conversationHistory.length === 0) {
-        deleteCookie('conversationHistory');
-        console.debug('No history to save, deleted storage');
-        return;
-      }
-
-      // Only keep the last 20 entries
-      let storageHistory = [...conversationHistory];
-      if (storageHistory.length > 20) {
-        storageHistory = storageHistory.slice(0, 20);
-        console.debug('Trimmed history to last 20 entries');
-      }
-
-      // Only keep minimal fields: prompt, links and timestamp
-      storageHistory = storageHistory.map(entry => ({
-        prompt: entry.prompt || '',
-        links: entry.links || {},
-        timestamp: entry.timestamp || new Date().toISOString()
-      }));
-
-      const jsonString = JSON.stringify(storageHistory);
-      console.debug('History JSON size:', jsonString.length, 'characters');
-
-      setCookie('conversationHistory', jsonString, 30);
-
-      if (storageHistory.length > 0 && !isInitialLoad) {
-        showToast('Research history saved!');
-      }
-    } catch (error) {
-      console.error('Error saving research history:', error);
-      showToast('Error saving history. Some entries may not be saved.');
-    }
+    // No-op: History is saved on server side now.
+    // This function is kept for backward compatibility with existing code that may call it.
   }
 
   // Delete a history entry
-  const deleteHistoryEntry = (index) => {
+  const deleteHistoryEntry = async (id) => {
     if (confirm('Are you sure you want to delete this research entry?')) {
-      conversationHistory.splice(index, 1);
-      saveConversationHistory();
-      renderHistoryEntries();
-      showToast('Entry deleted successfully');
+      try {
+        await fetch(`/api/reports/${id}`, { method: 'DELETE' });
+        loadConversationHistory();
+        showToast('Entry deleted successfully');
+      } catch (error) {
+        console.error('Error deleting entry:', error);
+        showToast('Error deleting entry');
+      }
     }
   }
 
-  // Clear all conversation history
+  // Clear all conversation history (Not implemented on server yet, so just warn)
   const clearConversationHistory = () => {
-    if (confirm('Are you sure you want to clear all research history? This cannot be undone.')) {
-      conversationHistory = [];
-      saveConversationHistory();
-      renderHistoryEntries();
-      showToast('Research history cleared successfully');
-    }
+    alert('Clearing all history is not yet supported on the server.');
   }
 
-  // Filter history entries based on search term
+  // Filter history entries based on search term (client-side filter of loaded list)
   const filterHistoryEntries = () => {
     const searchTerm = document.getElementById('historySearch').value.toLowerCase();
     const historyEntries = document.getElementById('historyEntries');
@@ -509,7 +462,6 @@ const GPTResearcher = (() => {
 
     entries.forEach(entry => {
       const title = entry.querySelector('.history-entry-title').textContent.toLowerCase();
-      // Search only in the title since we no longer have preview text
       if (title.includes(searchTerm)) {
         entry.style.display = 'block';
       } else {
@@ -522,12 +474,12 @@ const GPTResearcher = (() => {
   const sortHistoryEntries = (order) => {
     conversationHistory.sort((a, b) => {
       // Default to newest first if timestamps don't exist
-      if (!a.timestamp || !b.timestamp) return 0;
+      if (!a.created_at || !b.created_at) return 0;
 
       if (order === 'newest') {
-        return new Date(b.timestamp) - new Date(a.timestamp);
+        return new Date(b.created_at) - new Date(a.created_at);
       } else {
-        return new Date(a.timestamp) - new Date(b.timestamp);
+        return new Date(a.created_at) - new Date(b.created_at);
       }
     });
   }
@@ -547,23 +499,22 @@ const GPTResearcher = (() => {
     // Sort by the current selection
     const sortOrder = document.getElementById('historySortOrder')?.value || 'newest';
     sortHistoryEntries(sortOrder);
-    console.debug('Sorted history entries:', sortOrder);
 
-    conversationHistory.forEach((entry, index) => {
+    conversationHistory.forEach((entry) => {
       const entryElement = document.createElement('div');
       entryElement.className = 'history-entry';
-      entryElement.setAttribute('data-id', index);
+      entryElement.setAttribute('data-id', entry.id);
 
       // Make the entire entry clickable to load it
       entryElement.addEventListener('click', () => {
-        loadResearchEntry(index);
+        loadResearchEntry(entry.id);
       });
 
-      // Format timestamp if available
+      // Format timestamp
       let timestampHTML = '';
-      if (entry.timestamp) {
+      if (entry.created_at) {
         try {
-          const timestamp = new Date(entry.timestamp);
+          const timestamp = new Date(entry.created_at);
           const formattedDate = timestamp.toLocaleDateString();
           const formattedTime = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           timestampHTML = `<span class="history-entry-timestamp">${formattedDate} ${formattedTime}</span>`;
@@ -572,20 +523,11 @@ const GPTResearcher = (() => {
         }
       }
 
-      // Make sure links object exists
-      const links = entry.links || {};
-
-      // Build the HTML for the entry with enhanced formatting
+      // Build the HTML for the entry
       entryElement.innerHTML = `
         <div class="history-entry-header">
-          <h4 class="history-entry-title">${entry.prompt || 'Unnamed Research'}</h4>
+          <h4 class="history-entry-title">${entry.task || 'Unnamed Research'}</h4>
           ${timestampHTML}
-        </div>
-        <div class="history-entry-format">
-          ${links.pdf ? `<a href="${links.pdf}" class="history-entry-action" target="_blank" title="Open PDF Report"><i class="fas fa-file-pdf"></i> PDF</a>` : ''}
-          ${links.docx ? `<a href="${links.docx}" class="history-entry-action" target="_blank" title="Open Word Document"><i class="fas fa-file-word"></i> Word</a>` : ''}
-          ${links.md ? `<a href="${links.md}" class="history-entry-action" target="_blank" title="Open Markdown File"><i class="fas fa-file-lines"></i> MD</a>` : ''}
-          ${links.json ? `<a href="${links.json}" class="history-entry-action" target="_blank" title="Open JSON Data"><i class="fas fa-file-code"></i> JSON</a>` : ''}
         </div>
         <div class="history-entry-actions">
           <button class="history-entry-action delete-entry" title="Delete this research entry"><i class="fas fa-trash-alt"></i></button>
@@ -597,105 +539,131 @@ const GPTResearcher = (() => {
       if (deleteBtn) {
         deleteBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          deleteHistoryEntry(index);
+          deleteHistoryEntry(entry.id);
         });
       }
 
       historyEntries.appendChild(entryElement);
-      setTimeout(() => {
-        entryElement.style.animationDelay = `${index * 50}ms`;
-      }, 0);
     });
   }
 
   // Load a research entry from history
-  const loadResearchEntry = (index) => {
-    const entry = conversationHistory[index];
-    if (!entry) return;
-
-    // Fill form with the entry data
-    document.getElementById('task').value = entry.prompt; // Changed from entry.task for consistency
-    
-    // Check if report_type, report_source, and tone are in entry, otherwise use defaults or skip
-    const reportTypeSelect = document.querySelector('select[name="report_type"]');
-    if (reportTypeSelect && entry.reportType) {
-        reportTypeSelect.value = entry.reportType;
-    } else if (reportTypeSelect) {
-        reportTypeSelect.value = reportTypeSelect.options[0].value; // Default to first option
-    }
-
-    const reportSourceSelect = document.querySelector('select[name="report_source"]');
-    if (reportSourceSelect && entry.reportSource) {
-        reportSourceSelect.value = entry.reportSource;
-    } else if (reportSourceSelect) {
-        reportSourceSelect.value = reportSourceSelect.options[0].value; // Default to first option
-    }
-
-    const toneSelect = document.querySelector('select[name="tone"]');
-    if (toneSelect && entry.tone) {
-        toneSelect.value = entry.tone;
-    } else if (toneSelect) {
-        toneSelect.value = toneSelect.options[0].value; // Default to first option
-    }
-
-    const queryDomainsInput = document.querySelector('input[name="query_domains"]');
-    if (queryDomainsInput) {
-        if (entry.queryDomains && Array.isArray(entry.queryDomains) && entry.queryDomains.length > 0) {
-            queryDomainsInput.value = entry.queryDomains.join(', ');
-        } else {
-            queryDomainsInput.value = ''; // Clear if not present
+  const loadResearchEntry = async (id) => {
+    try {
+        const response = await fetch(`/api/reports/${id}`);
+        const data = await response.json();
+        
+        if (!data.report) {
+            showToast('Error: Report data not found');
+            return;
         }
+        
+        const entry = data.report;
+        
+        // Fill form with the entry data
+        document.getElementById('task').value = entry.task || '';
+        
+        if(entry.report_type) {
+            const reportTypeSelect = document.querySelector('select[name="report_type"]');
+            if(reportTypeSelect) reportTypeSelect.value = entry.report_type;
+        }
+        
+        if(entry.report_source) {
+             const reportSourceSelect = document.querySelector('select[name="report_source"]');
+             if(reportSourceSelect) reportSourceSelect.value = entry.report_source;
+        }
+        
+        if(entry.tone) {
+             const toneSelect = document.querySelector('select[name="tone"]');
+             if(toneSelect) toneSelect.value = entry.tone;
+        }
+
+        // Render Report Content
+        const output = document.getElementById('output');
+        const reportContainer = document.getElementById('reportContainer');
+        
+        // Clean previous state
+        output.innerHTML = '';
+        reportContainer.innerHTML = '';
+        
+        // Show report
+        const converter = new showdown.Converter();
+        const html = converter.makeHtml(entry.report_content);
+        reportContainer.innerHTML = html;
+        
+        // Show file links if available
+        if (entry.file_paths) {
+            const links = entry.file_paths;
+            
+            // Update download links
+            const downloadLink = document.getElementById('downloadLink');
+            const downloadLinkWord = document.getElementById('downloadLinkWord');
+            const downloadLinkMd = document.getElementById('downloadLinkMd');
+            const downloadLinkJson = document.getElementById('downloadLinkJson');
+            
+            if (downloadLink && links.pdf) {
+                downloadLink.href = links.pdf;
+                downloadLink.classList.remove('disabled');
+            }
+             if (downloadLinkWord && links.docx) {
+                downloadLinkWord.href = links.docx;
+                downloadLinkWord.classList.remove('disabled');
+            }
+             if (downloadLinkMd && links.md) {
+                downloadLinkMd.href = links.md;
+                downloadLinkMd.classList.remove('disabled');
+            }
+             if (downloadLinkJson && links.json) {
+                downloadLinkJson.href = links.json;
+                downloadLinkJson.classList.remove('disabled');
+            }
+            
+            // Show sticky bar
+             const stickyDownloadsBar = document.getElementById('stickyDownloadsBar');
+            if (stickyDownloadsBar) {
+                stickyDownloadsBar.classList.add('visible');
+            }
+            
+            // Also update top buttons
+             const downloadLinkTop = document.getElementById('downloadLinkTop');
+            const downloadLinkWordTop = document.getElementById('downloadLinkWordTop');
+            const downloadLinkMdTop = document.getElementById('downloadLinkMdTop');
+            
+            if (downloadLinkTop && links.pdf) {
+                downloadLinkTop.href = links.pdf;
+                downloadLinkTop.classList.remove('disabled');
+            }
+             if (downloadLinkWordTop && links.docx) {
+                downloadLinkWordTop.href = links.docx;
+                downloadLinkWordTop.classList.remove('disabled');
+            }
+             if (downloadLinkMdTop && links.md) {
+                downloadLinkMdTop.href = links.md;
+                downloadLinkMdTop.classList.remove('disabled');
+            }
+            
+            const reportActions = document.querySelector('.report-actions');
+            if(reportActions) reportActions.style.display = 'flex';
+        }
+
+        // Close panel
+        const historyPanel = document.getElementById('historyPanel');
+        if (historyPanel) historyPanel.classList.remove('open');
+        
+        // Scroll to report
+        reportContainer.scrollIntoView({ behavior: 'smooth' });
+        
+        showToast('Research loaded from history.');
+        
+    } catch (error) {
+        console.error('Error loading report:', error);
+        showToast('Error loading report details.');
     }
-
-    // Clear current research/report areas
-    document.getElementById('output').innerHTML = '';
-    document.getElementById('reportContainer').innerHTML = '';
-    document.getElementById('selectedImagesContainer').innerHTML = '';
-    document.getElementById('selectedImagesContainer').style.display = 'none';
-
-    // Hide download bar and chat
-    const stickyDownloadsBar = document.getElementById('stickyDownloadsBar');
-    if (stickyDownloadsBar) {
-        stickyDownloadsBar.classList.remove('visible');
-    }
-    const chatContainer = document.getElementById('chatContainer');
-    if (chatContainer) {
-        chatContainer.style.display = 'none';
-    }
-
-    // Reset UI state and report-specific buttons
-    updateState('initial'); // This will hide copy buttons etc.
-
-    // Close the history panel
-    const historyPanel = document.getElementById('historyPanel');
-    if (historyPanel) {
-        historyPanel.classList.remove('open');
-    }
-
-    // Scroll to the form
-    const formElement = document.getElementById('form');
-    if (formElement) {
-        formElement.scrollIntoView({ behavior: 'smooth' });
-    }
-
-    // Inform user
-    showToast('Research parameters loaded. You can start the research again.');
   }
 
   // Copy entry content to clipboard
   const copyEntryToClipboard = (index) => {
-    const entry = conversationHistory[index];
-    if (!entry || !entry.content) return;
-
-    const textarea = document.createElement('textarea');
-    textarea.value = entry.content;
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-
-    // Show a toast notification
-    showToast('Research content copied to clipboard!');
+     // Deprecated or needs update if we want to support it
   }
 
   // Show a toast notification
@@ -719,49 +687,11 @@ const GPTResearcher = (() => {
     }, duration);
   }
 
-  // Save current research to history (minimal: prompt and links only)
+  // Save current research to history (Trigger reload)
   const saveToHistory = (report, downloadLinks) => {
-    if (!downloadLinks) {
-      console.error('No download links provided');
-      showToast('Error: Could not save research to history');
-      return;
-    }
-
-    const prompt = document.getElementById('task').value;
-
-    // Create links object with proper structure
-    const links = {
-      pdf: downloadLinks.pdf || '',
-      docx: downloadLinks.docx || '',
-      md: downloadLinks.md || '',
-      json: downloadLinks.json || ''
-    };
-
-    console.debug('Saving history with links:', links);
-
-    // Create history entry with timestamp
-    const historyEntry = {
-      prompt,
-      links,
-      timestamp: new Date().toISOString()
-    };
-
-    // Add to beginning of array if it's not empty
-    if (!conversationHistory) {
-      conversationHistory = [];
-    }
-
-    conversationHistory.unshift(historyEntry);
-    saveConversationHistory();
-    renderHistoryEntries();
-    document.getElementById('historyPanel').classList.add('open');
-
-    // Prompt user about storage method
-    if (cookiesEnabled) {
-      showToast('Research saved! Your history is stored in a browser cookie.');
-    } else {
-      showToast('Research saved! Your history is stored using localStorage.');
-    }
+    // Just reload history, as server already saved it
+    console.log("Research finished, reloading history from server...");
+    loadConversationHistory();
   }
 
   // Function to update the research icon spinning state
@@ -875,32 +805,17 @@ const GPTResearcher = (() => {
       } else if (data.type === 'report') {
         // Add to reportContent for history
         reportContent += data.output;
-
-        // Get the current report_type
-        const report_type = document.querySelector('select[name="report_type"]').value;
-
-        // Determine if we're using detailed_report
-        const isDetailedReport = report_type === 'detailed_report';
-
-        if (isDetailedReport) {
-          allReports += data.output; // Accumulate raw markdown
-          // Always render the HTML of *all accumulated markdown* for detailed reports during streaming.
-          // writeReport will replace the container's content.
-          writeReport({ output: allReports, type: 'report' }, converter, false, false);
-        } else {
-          // For all other report types, append HTML of current chunk to the container.
-          writeReport({ output: data.output, type: 'report' }, converter, false, true); // append = true
-        }
+        // Accumulate raw markdown and render the full report each update.
+        // This avoids broken tables when a table is split across streaming chunks.
+        allReports += data.output;
+        writeReport({ output: allReports, type: 'report' }, converter, false, false);
       } else if (data.type === 'path') {
         updateState('finished')
         downloadLinkData = updateDownloadLink(data)
         isResearchActive = false;
 
-        // Get the current report_type
-        const report_type = document.querySelector('select[name="report_type"]').value;
-
-        // Only for detailed_report, show the complete accumulated report at the end
-        if (report_type === 'detailed_report' && allReports) {
+        // Ensure the complete accumulated report is rendered at the end.
+        if (allReports) {
           const finalData = { output: allReports, type: 'report' };
           writeReport(finalData, converter, true, false); // isFinal=true, append=false
         }

@@ -21,13 +21,13 @@ const Header = ({ loading, isStopped, showResult, onStop, onNewResearch, isCopil
         <div className="flex flex-col items-center">
           {/* Logo/Home link */}
           <a href="/">
-            <img
+            {/* <img
               src="/img/gptr-logo.png"
               alt="logo"
               width={60}
               height={60}
               className="lg:h-16 lg:w-16"
-            />
+            /> */}
           </a>
           
           {/* Action buttons container */}

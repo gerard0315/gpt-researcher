@@ -62,6 +62,17 @@ async def create_chat_completion(
     if llm_kwargs:
         provider_kwargs.update(llm_kwargs)
 
+    # Optional: enable OpenAI input caching via env flag
+    if llm_provider == "openai" and os.getenv("OPENAI_INPUT_CACHE", "").lower() in {"1", "true", "yes", "on"}:
+        beta_header = "input-caching"
+        extra_headers = provider_kwargs.get("extra_headers", {})
+        # Preserve any existing OpenAI-Beta header by appending when appropriate
+        if "OpenAI-Beta" in extra_headers and beta_header not in extra_headers["OpenAI-Beta"]:
+            extra_headers["OpenAI-Beta"] = f"{extra_headers['OpenAI-Beta']}, {beta_header}"
+        else:
+            extra_headers["OpenAI-Beta"] = beta_header
+        provider_kwargs["extra_headers"] = extra_headers
+
     if model in SUPPORT_REASONING_EFFORT_MODELS:
         provider_kwargs['reasoning_effort'] = reasoning_effort
 

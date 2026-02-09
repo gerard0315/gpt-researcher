@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from fastapi import HTTPException
 import logging
+from server import db
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,18 @@ async def handle_start_command(websocket, data: str, manager):
     file_paths = await generate_report_files(report, sanitized_filename)
     # Add JSON log path to file_paths
     file_paths["json"] = os.path.relpath(logs_handler.log_file)
+    
+    # Save to database
+    db.save_research(
+        id=sanitized_filename,
+        task=task,
+        report_type=report_type,
+        report_source=report_source,
+        tone=tone,
+        report_content=str(report),
+        file_paths=file_paths
+    )
+    
     await send_file_paths(websocket, file_paths)
 
 

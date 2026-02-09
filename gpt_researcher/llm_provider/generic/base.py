@@ -35,6 +35,11 @@ _SUPPORTED_PROVIDERS = {
     "netmind",
 }
 
+def _is_moonshot_base_url(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    return "api.moonshot.cn" in base_url
+
 NO_SUPPORT_TEMPERATURE_MODELS = [
     "deepseek/deepseek-reasoner",
     "o1-mini",
@@ -101,6 +106,12 @@ class GenericLLMProvider:
             # Support custom OpenAI-compatible APIs via OPENAI_BASE_URL
             if "openai_api_base" not in kwargs and os.environ.get("OPENAI_BASE_URL"):
                 kwargs["openai_api_base"] = os.environ["OPENAI_BASE_URL"]
+
+            if "openai_api_key" not in kwargs:
+                base_url = kwargs.get("openai_api_base") or os.environ.get("OPENAI_BASE_URL")
+                if _is_moonshot_base_url(base_url) and os.environ.get("KIMI_API_KEY"):
+                    # Use Kimi key when targeting Moonshot.
+                    kwargs["openai_api_key"] = os.environ["KIMI_API_KEY"]
 
             llm = ChatOpenAI(**kwargs)
         elif provider == "anthropic":
