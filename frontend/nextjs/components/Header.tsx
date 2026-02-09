@@ -1,5 +1,7 @@
 import React from 'react';
 import Image from "next/image";
+import Modal from './Settings/Modal';
+import { ChatBoxSettings } from '@/types/data';
 
 interface HeaderProps {
   loading?: boolean;      // Indicates if research is currently in progress
@@ -8,30 +10,29 @@ interface HeaderProps {
   onStop?: () => void;    // Handler for stopping ongoing research
   onNewResearch?: () => void;  // Handler for starting fresh research
   isCopilotMode?: boolean; // Indicates if we are in copilot mode
+  chatBoxSettings?: ChatBoxSettings;
+  setChatBoxSettings?: React.Dispatch<React.SetStateAction<ChatBoxSettings>>;
 }
 
-const Header = ({ loading, isStopped, showResult, onStop, onNewResearch, isCopilotMode }: HeaderProps) => {
+const Header = ({ loading, isStopped, showResult, onStop, onNewResearch, isCopilotMode, chatBoxSettings, setChatBoxSettings }: HeaderProps) => {
   return (
     <div className="fixed top-0 left-0 right-0 z-50">
       {/* Pure transparent blur background */}
       <div className="absolute inset-0 backdrop-blur-sm bg-transparent"></div>
-      
+
       {/* Header container */}
+      {/* Preferences button - top right */}
+      <div className="absolute top-4 right-4 z-50">
+        {chatBoxSettings && setChatBoxSettings && (
+          <Modal setChatBoxSettings={setChatBoxSettings} chatBoxSettings={chatBoxSettings} />
+        )}
+      </div>
+
       <div className="container relative h-[60px] px-4 lg:h-[80px] lg:px-0 pt-4 pb-4">
-        <div className="flex flex-col items-center">
-          {/* Logo/Home link */}
-          <a href="/">
-            {/* <img
-              src="/img/gptr-logo.png"
-              alt="logo"
-              width={60}
-              height={60}
-              className="lg:h-16 lg:w-16"
-            /> */}
-          </a>
-          
-          {/* Action buttons container */}
-          <div className="flex gap-2 mt-2 transition-all duration-300 ease-in-out">
+        <div className="flex items-center justify-center">
+
+          {/* Action buttons container - center/right */}
+          <div className="flex gap-2 transition-all duration-300 ease-in-out">
             {/* Stop button - shown only during active research */}
             {loading && !isStopped && (
               <button

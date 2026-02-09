@@ -49,18 +49,19 @@
         }
 
         .icon-button:hover {
-            background-color: rgba(123, 104, 238, 0.1); /* Placeholder, adjust in styles.css */
+            background-color: rgba(123, 104, 238, 0.1);
+            /* Placeholder, adjust in styles.css */
         }
 
-        .icon-button:active {
-        }
+        .icon-button:active {}
 
         /* Ensure buttons are properly aligned in headings */
-        h2 .icon-button, h2 .expand-button {
+        h2 .icon-button,
+        h2 .expand-button {
             vertical-align: middle;
             font-size: 0.8em;
         }
-        
+
         /* New navigation buttons in the top-right corner */
         .nav-buttons {
             position: fixed;
@@ -133,25 +134,27 @@
         </div>
     </div>
 
-    <section class="landing">
+    <!-- <section class="landing">
         <div class="max-w-5xl mx-auto text-center">
             <h1 class="text-4xl font-extrabold mx-auto lg:text-7xl">
                 GPT Researcher
             </h1>
             <p class="max-w-6xl mx-auto text-gray-600 mt-8" style="font-size:20px">
                 Say Hello to <b>GPT Researcher</b>, your AI mate for rapid insights and comprehensive research. <br>
-                GPT Researcher takes care of everything from accurate source gathering and organization of research results to generation of customized reports with citations.
+                GPT Researcher takes care of everything from accurate source gathering and organization of research
+                results to generation of customized reports with citations.
             </p>
             <a href="#form" class="btn btn-primary">Start Researching</a>
         </div>
-    </section>
+    </section> -->
 
     <main class="container" id="form">
         <!-- <div class="agent-item"><img src="/static/gptr-logo.png" class="avatar" alt="Auto Agent"></div> -->
         <form method="POST" class="mt-3" id="researchForm">
             <div class="form-group">
                 <label for="task" class="agent-question">What would you like me to research next?</label>
-                <textarea id="task" name="task" class="form-control highlight-connection" placeholder="Enter any topic, question, or idea..." required autocomplete="on"></textarea>
+                <textarea id="task" name="task" class="form-control highlight-connection"
+                    placeholder="Enter any topic, question, or idea..." required autocomplete="on"></textarea>
                 <input type="radio" name="agent" id="autoAgent" value="Auto Agent" checked hidden>
             </div>
             <div class="form-group">
@@ -220,7 +223,8 @@
             </div>
             <div class="form-group">
                 <label for="queryDomains" class="form-label">Query Domains (Optional)</label>
-                <input type="text" class="form-control highlight-connection" id="queryDomains" name="query_domains" placeholder="Enter domains separated by commas" autocomplete="on">
+                <input type="text" class="form-control highlight-connection" id="queryDomains" name="query_domains"
+                    placeholder="Enter domains separated by commas" autocomplete="on">
                 <small class="text-muted">Example: techcrunch.com, forbes.com</small>
             </div>
 
@@ -237,27 +241,32 @@
                         </button>
                     </div>
                     <small class="text-muted">Connect to external tools and data sources through MCP servers</small>
-                    
+
                     <div id="mcpConfigSection" class="mcp-config-section" style="display: none;">
                         <div class="mcp-presets">
                             <label class="form-label">Quick Presets</label>
                             <div class="preset-buttons">
-                                <button type="button" class="btn btn-outline-secondary btn-sm preset-btn" data-preset="github">
+                                <button type="button" class="btn btn-outline-secondary btn-sm preset-btn"
+                                    data-preset="github">
                                     <i class="fab fa-github"></i> GitHub
                                 </button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm preset-btn" data-preset="tavily">
+                                <button type="button" class="btn btn-outline-secondary btn-sm preset-btn"
+                                    data-preset="tavily">
                                     <i class="fas fa-search"></i> Tavily Web Search
                                 </button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm preset-btn" data-preset="filesystem">
+                                <button type="button" class="btn btn-outline-secondary btn-sm preset-btn"
+                                    data-preset="filesystem">
                                     <i class="fas fa-folder"></i> Local Files
                                 </button>
                             </div>
-                            <small class="text-muted">Click a preset to add pre-configured MCP servers to the JSON below</small>
+                            <small class="text-muted">Click a preset to add pre-configured MCP servers to the JSON
+                                below</small>
                         </div>
 
                         <div class="mcp-config-group">
                             <label for="mcpConfig" class="form-label">MCP Servers Configuration</label>
-                            <textarea id="mcpConfig" name="mcp_config" class="form-control mcp-config-textarea" rows="8" placeholder="Paste your MCP servers configuration as JSON array...">[]</textarea>
+                            <textarea id="mcpConfig" name="mcp_config" class="form-control mcp-config-textarea" rows="8"
+                                placeholder="Paste your MCP servers configuration as JSON array...">[]</textarea>
                             <div class="mcp-config-status">
                                 <span id="mcpConfigStatus" class="mcp-status-text">Valid JSON ✓</span>
                                 <button type="button" id="mcpFormatBtn" class="btn btn-sm btn-secondary">
@@ -265,8 +274,10 @@
                                 </button>
                             </div>
                             <small class="text-muted">
-                                Paste your MCP servers configuration as a JSON array. Each server should have properties like 
-                                <code>name</code>, <code>command</code>, <code>args</code>, and optional <code>env</code> variables.
+                                Paste your MCP servers configuration as a JSON array. Each server should have properties
+                                like
+                                <code>name</code>, <code>command</code>, <code>args</code>, and optional
+                                <code>env</code> variables.
                                 <a href="#" id="mcpExampleLink">See example →</a>
                             </small>
                         </div>
@@ -279,14 +290,18 @@
 
         <!-- Add JSON button above Research Progress section -->
         <div class="margin-div" id="jsonButtonContainer" style="display: none; text-align: right; margin-bottom: 10px;">
-            <a id="downloadLinkJsonTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+            <a id="downloadLinkJsonTop" href="#" class="report-action-btn disabled" target="_blank"
+                rel="noopener noreferrer">
                 <i class="fas fa-file-code"></i> JSON
             </a>
         </div>
 
         <div class="margin-div research-output-container">
             <!-- Move spinner to the left side of the text -->
-            <h2><div id="modernSpinner" class="modern-spinner"></div> Research Progress <button id="expandOutputBtn" class="expand-button" title="Expand"><i class="fas fa-expand-alt"></i></button></h2>
+            <h2>
+                <div id="modernSpinner" class="modern-spinner"></div> Research Progress <button id="expandOutputBtn"
+                    class="expand-button" title="Expand"><i class="fas fa-expand-alt"></i></button>
+            </h2>
             <p class="mt-2 text-left" style="font-size: 0.8rem;">
                 Watch as the AI works to gather information and analyze your topic in real-time.</p>
             <div id="output"></div>
@@ -305,13 +320,16 @@
             </h2>
             <!-- Add download buttons above the report container -->
             <div class="report-actions" style="display: none;">
-                <a id="downloadLinkTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                <a id="downloadLinkTop" href="#" class="report-action-btn disabled" target="_blank"
+                    rel="noopener noreferrer">
                     <i class="fas fa-file-pdf"></i> PDF
                 </a>
-                <a id="downloadLinkWordTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                <a id="downloadLinkWordTop" href="#" class="report-action-btn disabled" target="_blank"
+                    rel="noopener noreferrer">
                     <i class="fas fa-file-word"></i> Word
                 </a>
-                <a id="downloadLinkMdTop" href="#" class="report-action-btn disabled" target="_blank" rel="noopener noreferrer">
+                <a id="downloadLinkMdTop" href="#" class="report-action-btn disabled" target="_blank"
+                    rel="noopener noreferrer">
                     <i class="fas fa-file-lines"></i> Markdown
                 </a>
             </div>
@@ -323,11 +341,13 @@
 
         <!-- Chat Container -->
         <div class="margin-div chat-container" id="chatContainer" style="display: none;">
-            <h2><i class="fas fa-comments"></i> Chat with AI about this research <button id="expandChatBtn" class="expand-button" title="Expand"><i class="fas fa-expand-alt"></i></button></h2>
+            <h2><i class="fas fa-comments"></i> Chat with AI about this research <button id="expandChatBtn"
+                    class="expand-button" title="Expand"><i class="fas fa-expand-alt"></i></button></h2>
             <p class="text-muted">Ask questions about the research report to get more insights</p>
             <div id="chatMessages" class="chat-messages"></div>
             <div class="chat-input-container">
-                <textarea id="chatInput" class="form-control chat-input" placeholder="Ask a question about this research..." rows="2"></textarea>
+                <textarea id="chatInput" class="form-control chat-input"
+                    placeholder="Ask a question about this research..." rows="2"></textarea>
                 <button id="voiceInputBtn" class="btn btn-secondary" title="Use voice input">
                     <i class="fas fa-microphone"></i>
                 </button>
@@ -370,36 +390,40 @@
             <!-- Entries will be populated dynamically -->
         </div>
     </div>
-    
+
     <!-- Sticky Downloads Bar -->
     <div class="sticky-downloads-bar" id="stickyDownloadsBar" style="display: none;"> <!-- Initially hidden -->
         <div class="download-buttons-container">
             <a id="copyToClipboard" class="download-option-btn disabled">
                 <i class="fas fa-copy"></i> Copy (Markdown)
             </a>
-            <a id="downloadLinkMd" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+            <a id="downloadLinkMd" href="#" class="download-option-btn disabled" target="_blank"
+                rel="noopener noreferrer">
                 <i class="fas fa-file-lines"></i> Markdown
             </a>
-            <a id="downloadLink" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+            <a id="downloadLink" href="#" class="download-option-btn disabled" target="_blank"
+                rel="noopener noreferrer">
                 <i class="fas fa-file-pdf"></i> PDF
             </a>
-            <a id="downloadLinkWord" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+            <a id="downloadLinkWord" href="#" class="download-option-btn disabled" target="_blank"
+                rel="noopener noreferrer">
                 <i class="fas fa-file-word"></i> Word
             </a>
-            <a id="downloadLinkJson" href="#" class="download-option-btn disabled" target="_blank" rel="noopener noreferrer">
+            <a id="downloadLinkJson" href="#" class="download-option-btn disabled" target="_blank"
+                rel="noopener noreferrer">
                 <i class="fas fa-file-code"></i> Log (JSON)
             </a>
         </div>
     </div>
 
-    <footer>
+    <!-- <footer>
         <p>
             <a target="_blank" href="https://gptr.dev">Homepage</a> |
             <a target="_blank" href="https://github.com/assafelovic/gpt-researcher">GitHub</a> |
             <a target="_blank" href="https://discord.gg/spBgZmm3Xe">Discord</a>
         </p>
         <p>GPT Researcher &copy; 2024</p>
-    </footer>
+    </footer> -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/1.9.1/showdown.min.js"></script>
     <script src="/site/scripts.js"></script>
     <script>

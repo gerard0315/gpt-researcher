@@ -118,7 +118,7 @@ start_services() {
     
     # Start backend
     log_info "Starting backend server on port $BACKEND_PORT..."
-    python -m uvicorn backend.server.server:app --host=0.0.0.0 --port=$BACKEND_PORT --reload &
+    python -m uvicorn backend.server.app:app --host=0.0.0.0 --port=$BACKEND_PORT --reload &
     local backend_pid=$!
     echo "$backend_pid" >> "$PID_FILE"
     log_info "Backend started with PID: $backend_pid"
