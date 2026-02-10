@@ -4,7 +4,11 @@ import logging
 import os
 from typing import Any
 from ..actions.utils import stream_output
-from ..actions.query_processing import plan_research_outline, get_search_results
+from ..actions.query_processing import (
+    plan_research_outline,
+    get_search_results,
+    get_working_query_for_planning,
+)
 from ..document import DocumentLoader, OnlineDocumentLoader, LangChainDocumentLoader
 from ..utils.enum import ReportSource, ReportType
 from ..utils.logging_config import get_json_handler
@@ -114,6 +118,22 @@ class ResearchConductor:
         Returns:
             List of queries
         """
+        planning_query = await get_working_query_for_planning(
+            query=query,
+            cfg=self.researcher.cfg,
+            cost_callback=self.researcher.add_costs,
+            **self.researcher.kwargs,
+        )
+        if planning_query != query:
+            await self._emit_detailed_log(
+                "planning_query_translation",
+                "Translated non-English planning prompt to English working query.",
+                {
+                    "original_query": self._truncate_text(query, 400),
+                    "translated_query": self._truncate_text(planning_query, 400),
+                },
+            )
+
         await stream_output(
             "logs",
             "planning_research",
@@ -121,13 +141,19 @@ class ResearchConductor:
             self.researcher.websocket,
         )
 
-        search_results = await get_search_results(query, self.researcher.retrievers[0], query_domains, researcher=self.researcher)
+        search_results = await get_search_results(
+            planning_query,
+            self.researcher.retrievers[0],
+            query_domains,
+            researcher=self.researcher,
+        )
         self.logger.info(f"Initial search results obtained: {len(search_results)} results")
         await self._emit_detailed_log(
             "planning_search_results",
             f"Planning search returned {len(search_results)} results for '{query}'.",
             {
-                "query": query,
+                "query": planning_query,
+                "original_query": query,
                 "retriever": self.researcher.retrievers[0].__name__,
                 "result_count": len(search_results),
                 "results": self._build_result_previews(search_results),

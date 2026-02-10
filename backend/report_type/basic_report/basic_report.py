@@ -19,6 +19,9 @@ class BasicReport:
         headers=None,
         mcp_configs=None,
         mcp_strategy=None,
+        model_overrides=None,
+        llm_provider_credentials=None,
+        config_overrides=None,
     ):
         self.query = query
         self.query_domains = query_domains
@@ -50,6 +53,12 @@ class BasicReport:
             gpt_researcher_params["mcp_configs"] = mcp_configs
         if mcp_strategy is not None:
             gpt_researcher_params["mcp_strategy"] = mcp_strategy
+        if model_overrides is not None:
+            gpt_researcher_params["model_overrides"] = model_overrides
+        if llm_provider_credentials is not None:
+            gpt_researcher_params["llm_provider_credentials"] = llm_provider_credentials
+        if config_overrides is not None:
+            gpt_researcher_params["config_overrides"] = config_overrides
 
         self.gpt_researcher = GPTResearcher(**gpt_researcher_params)
 

@@ -58,11 +58,15 @@ class WriterAgent:
                 f"{sample_json}\n\n",
             },
         ]
+        provider_auth = task.get("llm_provider_credentials")
+        runtime_llm_kwargs = {"__provider_auth__": provider_auth} if provider_auth else None
 
         response = await call_model(
             prompt,
             task.get("model"),
             response_format="json",
+            llm_provider=task.get("llm_provider"),
+            llm_kwargs=runtime_llm_kwargs,
         )
         return response
 
@@ -83,11 +87,15 @@ Headers Data: {headers}\n
 """,
             },
         ]
+        provider_auth = task.get("llm_provider_credentials")
+        runtime_llm_kwargs = {"__provider_auth__": provider_auth} if provider_auth else None
 
         response = await call_model(
             prompt,
             task.get("model"),
             response_format="json",
+            llm_provider=task.get("llm_provider"),
+            llm_kwargs=runtime_llm_kwargs,
         )
         return {"headers": response}
 

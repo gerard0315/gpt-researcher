@@ -6,6 +6,7 @@ import subprocess
 import sys
 import importlib
 import logging
+import re
 
 from gpt_researcher.utils.workers import WorkerPool
 
@@ -25,6 +26,30 @@ class Scraper:
     """
     Scraper class to extract the content from the links
     """
+    _STATIC_SCRAPERS = {"bs", "web_base_loader"}
+    _DYNAMIC_FALLBACK_MIN_CONTENT = 400
+    _BLOCKED_CONTENT_MARKERS = (
+        "enable javascript",
+        "javascript is required",
+        "javascript disabled",
+        "please turn javascript on",
+        "checking your browser",
+        "just a moment",
+        "verify you are human",
+        "security check",
+        "access denied",
+        "captcha",
+        "cloudflare",
+    )
+    _ERROR_CONTENT_MARKERS = (
+        "traceback",
+        "an error occurred",
+        "please install",
+        "no module named",
+        "required to use nodriverscraper",
+    )
+    _NODRIVER_AVAILABLE = None
+    _NODRIVER_MISSING_LOGGED = False
 
     def __init__(self, urls, user_agent, scraper, worker_pool: WorkerPool):
         """
@@ -36,9 +61,7 @@ class Scraper:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
         self.scraper = scraper
-        if self.scraper == "tavily_extract":
-            self._check_pkg(self.scraper)
-        if self.scraper == "firecrawl":
+        if self.scraper in {"tavily_extract", "firecrawl", "nodriver"}:
             self._check_pkg(self.scraper)
         self.logger = logging.getLogger(__name__)
         self.worker_pool = worker_pool
@@ -69,6 +92,10 @@ class Scraper:
                 "package_installation_name": "firecrawl-py",
                 "import_name": "firecrawl",
             },
+            "nodriver": {
+                "package_installation_name": "zendriver",
+                "import_name": "zendriver",
+            },
         }
         pkg = pkg_map[scrapper_name]
         if not importlib.util.find_spec(pkg["import_name"]):
@@ -87,6 +114,90 @@ class Scraper:
                     f"`pip install -U {pkg_inst_name}`"
                 )
 
+    @staticmethod
+    def _normalize_text(value) -> str:
+        if not value:
+            return ""
+        return re.sub(r"\s+", " ", str(value)).strip()
+
+    def _looks_like_blocked_or_gate_page(self, content: str, title: str) -> bool:
+        haystack = f"{self._normalize_text(title)} {self._normalize_text(content)}".lower()
+        return any(marker in haystack for marker in self._BLOCKED_CONTENT_MARKERS)
+
+    def _looks_like_error_content(self, content: str) -> bool:
+        haystack = self._normalize_text(content).lower()
+        return any(marker in haystack for marker in self._ERROR_CONTENT_MARKERS)
+
+    def _should_try_dynamic_fallback(self, link: str, content: str, title: str) -> bool:
+        if self.scraper not in self._STATIC_SCRAPERS:
+            return False
+
+        if link.endswith(".pdf") or "arxiv.org" in link:
+            return False
+
+        normalized = self._normalize_text(content)
+        if not normalized:
+            return True
+
+        if self._looks_like_blocked_or_gate_page(normalized, title):
+            return True
+
+        return len(normalized) < self._DYNAMIC_FALLBACK_MIN_CONTENT
+
+    def _is_fallback_content_better(
+        self,
+        primary_content: str,
+        primary_title: str,
+        fallback_content: str,
+        fallback_title: str,
+    ) -> bool:
+        normalized_fallback = self._normalize_text(fallback_content)
+        if not normalized_fallback:
+            return False
+
+        if self._looks_like_error_content(normalized_fallback):
+            return False
+
+        if self._looks_like_blocked_or_gate_page(normalized_fallback, fallback_title):
+            return False
+
+        normalized_primary = self._normalize_text(primary_content)
+        if not normalized_primary:
+            return len(normalized_fallback) >= 100
+
+        if self._looks_like_blocked_or_gate_page(normalized_primary, primary_title):
+            return len(normalized_fallback) >= 100
+
+        return len(normalized_fallback) >= max(
+            self._DYNAMIC_FALLBACK_MIN_CONTENT, int(len(normalized_primary) * 1.2)
+        )
+
+    async def _run_scraper(self, scraper):
+        if hasattr(scraper, "scrape_async"):
+            return await scraper.scrape_async()
+
+        return await asyncio.get_running_loop().run_in_executor(
+            self.worker_pool.executor, scraper.scrape
+        )
+
+    async def _run_dynamic_fallback(self, link: str, session):
+        if Scraper._NODRIVER_AVAILABLE is None:
+            Scraper._NODRIVER_AVAILABLE = (
+                importlib.util.find_spec("zendriver") is not None
+            )
+        if not Scraper._NODRIVER_AVAILABLE:
+            if not Scraper._NODRIVER_MISSING_LOGGED:
+                self.logger.warning(
+                    "NoDriver fallback is unavailable because zendriver is not installed. "
+                    "Install it with `pip install zendriver` or set SCRAPER=nodriver."
+                )
+                Scraper._NODRIVER_MISSING_LOGGED = True
+            return "", [], ""
+
+        self.logger.info(f"Attempting NoDriver fallback for {link}")
+        fallback_scraper = NoDriverScraper(link, session)
+        return await self._run_scraper(fallback_scraper)
+
     async def extract_data_from_url(self, link, session):
         """
         Extracts the data from the link with logging
@@ -101,25 +212,29 @@ class Scraper:
                 self.logger.info(f"\n=== Using {scraper_name} ===")
 
                 # Get content
-                if hasattr(scraper, "scrape_async"):
-                    content, image_urls, title = await scraper.scrape_async()
-                else:
-                    (
-                        content,
-                        image_urls,
-                        title,
-                    ) = await asyncio.get_running_loop().run_in_executor(
-                        self.worker_pool.executor, scraper.scrape
-                    )
+                content, image_urls, title = await self._run_scraper(scraper)
 
-                if len(content) < 100:
-                    self.logger.warning(f"Content too short or empty for {link}")
-                    return {
-                        "url": link,
-                        "raw_content": None,
-                        "image_urls": [],
-                        "title": title,
-                    }
+                if self._should_try_dynamic_fallback(link, content, title):
+                    try:
+                        (
+                            fallback_content,
+                            fallback_image_urls,
+                            fallback_title,
+                        ) = await self._run_dynamic_fallback(link, session)
+                    except Exception as fallback_error:
+                        self.logger.warning(
+                            f"NoDriver fallback failed for {link}: {fallback_error}"
+                        )
+                    else:
+                        if self._is_fallback_content_better(
+                            content, title, fallback_content, fallback_title
+                        ):
+                            self.logger.info(
+                                f"Using NoDriver fallback content for {link}"
+                            )
+                            content = fallback_content
+                            image_urls = fallback_image_urls
+                            title = fallback_title
 
                 # Log results
                 self.logger.info(f"\nTitle: {title}")

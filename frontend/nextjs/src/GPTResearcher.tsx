@@ -7,6 +7,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { Data, ChatBoxSettings, QuestionData } from '../types/data';
 import { preprocessOrderedData } from '../utils/dataProcessing';
 import { ResearchResults } from '../components/ResearchResults';
+import { DEFAULT_ADVANCED_SETTINGS } from '../constants/researchSettings';
 
 import Header from "../components/Header";
 import Hero from "../components/Hero";
@@ -47,11 +48,12 @@ export const GPTResearcher = ({
     tone: 'Objective',
     domains: [],
     defaultReportType: 'deep',
-    layoutType: 'default',
+    layoutType: 'research',
     mcp_enabled: false,
     mcp_configs: [],
     mcp_strategy: 'fast',
-    api_provider: 'bltcy',
+    model_config: { fast: 'official_gpt4o', smart: 'kimi_k2_turbo', strategic: 'bltcy_gpt52pro' },
+    advanced_settings: { ...DEFAULT_ADVANCED_SETTINGS },
   });
   const [question, setQuestion] = useState("");
   const [orderedData, setOrderedData] = useState<Data[]>([]);

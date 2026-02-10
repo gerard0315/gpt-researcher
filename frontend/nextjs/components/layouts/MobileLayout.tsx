@@ -1,9 +1,10 @@
 import React, { useRef, useState } from "react";
 import { Toaster } from "react-hot-toast";
 import Image from "next/image";
-import { ChatBoxSettings } from "@/types/data";
+import { AdvancedSettings, ChatBoxSettings } from "@/types/data";
 import { useResearchHistoryContext } from "@/hooks/ResearchHistoryContext";
 import { formatDistanceToNow } from "date-fns";
+import { DEFAULT_ADVANCED_SETTINGS } from "@/constants/researchSettings";
 
 interface MobileLayoutProps {
   children: React.ReactNode;
@@ -57,6 +58,36 @@ export default function MobileLayout({
   const handleHistoryItemClick = (id: string) => {
     setShowHistory(false);
     window.location.href = `/research/${id}`;
+  };
+
+  const currentAdvancedSettings = {
+    ...DEFAULT_ADVANCED_SETTINGS,
+    ...(chatBoxSettings.advanced_settings || {}),
+  };
+
+  const updateAdvancedSetting = (
+    key: keyof AdvancedSettings,
+    rawValue: string,
+    min: number,
+    max: number
+  ) => {
+    if (rawValue === "") {
+      return;
+    }
+
+    const parsed = Number.parseInt(rawValue, 10);
+    if (Number.isNaN(parsed)) {
+      return;
+    }
+
+    const clamped = Math.min(max, Math.max(min, parsed));
+    setChatBoxSettings({
+      ...chatBoxSettings,
+      advanced_settings: {
+        ...currentAdvancedSettings,
+        [key]: clamped,
+      },
+    });
   };
 
   return (
@@ -277,8 +308,81 @@ export default function MobileLayout({
                   onChange={(e) => setChatBoxSettings({ ...chatBoxSettings, layoutType: e.target.value })}
                 >
                   <option value="copilot">Copilot - Chat style layout</option>
-                  <option value="document">Document - Traditional report layout</option>
+                  <option value="research">Document - Traditional report layout</option>
                 </select>
+              </div>
+
+              <div className="pt-2 border-t border-gray-700/50 space-y-2">
+                <p className="text-xs text-gray-400">Advanced Settings</p>
+
+                {chatBoxSettings.report_type === "deep" && (
+                  <>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Deep Breadth (1-12)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={12}
+                        step={1}
+                        value={currentAdvancedSettings.deep_research_breadth}
+                        onChange={(e) => updateAdvancedSetting("deep_research_breadth", e.target.value, 1, 12)}
+                        className="w-full bg-gray-900 border border-gray-700 rounded-md py-1.5 px-2 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Deep Depth (1-6)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={6}
+                        step={1}
+                        value={currentAdvancedSettings.deep_research_depth}
+                        onChange={(e) => updateAdvancedSetting("deep_research_depth", e.target.value, 1, 6)}
+                        className="w-full bg-gray-900 border border-gray-700 rounded-md py-1.5 px-2 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Deep Concurrency (1-12)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={12}
+                        step={1}
+                        value={currentAdvancedSettings.deep_research_concurrency}
+                        onChange={(e) => updateAdvancedSetting("deep_research_concurrency", e.target.value, 1, 12)}
+                        className="w-full bg-gray-900 border border-gray-700 rounded-md py-1.5 px-2 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Max Search Results / Query (1-20)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    step={1}
+                    value={currentAdvancedSettings.max_search_results_per_query}
+                    onChange={(e) => updateAdvancedSetting("max_search_results_per_query", e.target.value, 1, 20)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-md py-1.5 px-2 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Max Research Iterations (1-10)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={currentAdvancedSettings.max_iterations}
+                    onChange={(e) => updateAdvancedSetting("max_iterations", e.target.value, 1, 10)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-md py-1.5 px-2 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
+                  />
+                </div>
               </div>
             </div>
           </div>

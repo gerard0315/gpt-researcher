@@ -11,18 +11,23 @@ async def call_model(
     prompt: list,
     model: str,
     response_format: str | None = None,
+    llm_provider: str | None = None,
+    llm_kwargs: dict | None = None,
 ):
 
     cfg = Config()
     lc_messages = convert_openai_messages(prompt)
+    merged_llm_kwargs = dict(cfg.llm_kwargs or {})
+    if llm_kwargs:
+        merged_llm_kwargs.update(llm_kwargs)
 
     try:
         response = await create_chat_completion(
             model=model,
             messages=lc_messages,
             temperature=0,
-            llm_provider=cfg.smart_llm_provider,
-            llm_kwargs=cfg.llm_kwargs,
+            llm_provider=llm_provider or cfg.smart_llm_provider,
+            llm_kwargs=merged_llm_kwargs,
             # cost_callback=cost_callback,
         )
 

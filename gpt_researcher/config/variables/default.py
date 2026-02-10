@@ -4,9 +4,9 @@ DEFAULT_CONFIG: BaseConfig = {
     "RETRIEVER": "tavily",
     "EMBEDDING": "openai:text-embedding-3-small",
     "SIMILARITY_THRESHOLD": 0.42,
-    "FAST_LLM": "openai:kimi-k2-turbo-preview",
-    "SMART_LLM": "openai:kimi-k2-turbo-preview",  # Has support for long responses (2k+ words).
-    "STRATEGIC_LLM": "openai:kimi-k2-thinking-turbo",  # Strategic models tend to be slower and more expensive.
+    "FAST_LLM": "openai:gpt-4o",
+    "SMART_LLM": "moonshot:kimi-k2-turbo-preview",
+    "STRATEGIC_LLM": "bltcy:gpt-5.2-pro",
     "FAST_TOKEN_LIMIT": 3000,
     "SMART_TOKEN_LIMIT": 6000,
     "STRATEGIC_TOKEN_LIMIT": 4000,

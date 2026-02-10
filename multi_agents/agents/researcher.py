@@ -11,10 +11,13 @@ class ResearchAgent:
         self.tone = tone
 
     async def research(self, query: str, research_report: str = "research_report",
-                       parent_query: str = "", verbose=True, source="web", tone=None, headers=None):
+                       parent_query: str = "", verbose=True, source="web", tone=None, headers=None,
+                       model_overrides: dict | None = None, llm_provider_credentials: dict | None = None):
         # Initialize the researcher
         researcher = GPTResearcher(query=query, report_type=research_report, parent_query=parent_query,
-                                   verbose=verbose, report_source=source, tone=tone, websocket=self.websocket, headers=self.headers)
+                                   verbose=verbose, report_source=source, tone=tone, websocket=self.websocket,
+                                   headers=self.headers, model_overrides=model_overrides,
+                                   llm_provider_credentials=llm_provider_credentials)
         # Conduct research on the given query
         await researcher.conduct_research()
         # Write the report
@@ -22,10 +25,21 @@ class ResearchAgent:
 
         return report
 
-    async def run_subtopic_research(self, parent_query: str, subtopic: str, verbose: bool = True, source="web", headers=None):
+    async def run_subtopic_research(
+        self,
+        parent_query: str,
+        subtopic: str,
+        verbose: bool = True,
+        source="web",
+        headers=None,
+        model_overrides: dict | None = None,
+        llm_provider_credentials: dict | None = None,
+    ):
         try:
             report = await self.research(parent_query=parent_query, query=subtopic,
-                                         research_report="subtopic_report", verbose=verbose, source=source, tone=self.tone, headers=None)
+                                         research_report="subtopic_report", verbose=verbose, source=source,
+                                         tone=self.tone, headers=None, model_overrides=model_overrides,
+                                         llm_provider_credentials=llm_provider_credentials)
         except Exception as e:
             print(f"{Fore.RED}Error in researching topic {subtopic}: {e}{Style.RESET_ALL}")
             report = None
@@ -40,8 +54,12 @@ class ResearchAgent:
             await self.stream_output("logs", "initial_research", f"Running initial research on the following query: {query}", self.websocket)
         else:
             print_agent_output(f"Running initial research on the following query: {query}", agent="RESEARCHER")
+        model_overrides = task.get("model_overrides")
+        llm_provider_credentials = task.get("llm_provider_credentials")
         return {"task": task, "initial_research": await self.research(query=query, verbose=task.get("verbose"),
-                                                                      source=source, tone=self.tone, headers=self.headers)}
+                                                                      source=source, tone=self.tone, headers=self.headers,
+                                                                      model_overrides=model_overrides,
+                                                                      llm_provider_credentials=llm_provider_credentials)}
 
     async def run_depth_research(self, draft_state: dict):
         task = draft_state.get("task")
@@ -53,6 +71,10 @@ class ResearchAgent:
             await self.stream_output("logs", "depth_research", f"Running in depth research on the following report topic: {topic}", self.websocket)
         else:
             print_agent_output(f"Running in depth research on the following report topic: {topic}", agent="RESEARCHER")
+        model_overrides = task.get("model_overrides")
+        llm_provider_credentials = task.get("llm_provider_credentials")
         research_draft = await self.run_subtopic_research(parent_query=parent_query, subtopic=topic,
-                                                          verbose=verbose, source=source, headers=self.headers)
+                                                          verbose=verbose, source=source, headers=self.headers,
+                                                          model_overrides=model_overrides,
+                                                          llm_provider_credentials=llm_provider_credentials)
         return {"draft": research_draft}

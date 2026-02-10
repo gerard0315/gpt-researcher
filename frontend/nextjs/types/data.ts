@@ -38,6 +38,26 @@ export interface MCPConfig {
   env: Record<string, string>;
 }
 
+export type ModelPreset =
+  | 'official_gpt52pro'
+  | 'bltcy_gpt52pro'
+  | 'official_gpt4o'
+  | 'kimi_k2_turbo';
+
+export interface ModelConfig {
+  fast: ModelPreset;
+  smart: ModelPreset;
+  strategic: ModelPreset;
+}
+
+export interface AdvancedSettings {
+  deep_research_breadth: number;
+  deep_research_depth: number;
+  deep_research_concurrency: number;
+  max_search_results_per_query: number;
+  max_iterations: number;
+}
+
 export interface ChatBoxSettings {
   report_type: string;
   report_source: string;
@@ -48,7 +68,8 @@ export interface ChatBoxSettings {
   mcp_enabled: boolean;
   mcp_configs: MCPConfig[];
   mcp_strategy?: string;
-  api_provider?: 'official' | 'bltcy';
+  model_config?: ModelConfig;
+  advanced_settings?: AdvancedSettings;
 }
 
 export interface Domain {

@@ -20,6 +20,33 @@ def get_llm(llm_provider, **kwargs):
     return GenericLLMProvider.from_provider(llm_provider, **kwargs)
 
 
+def _split_llm_kwargs(llm_kwargs: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Extract provider-auth metadata from llm_kwargs."""
+    if not llm_kwargs:
+        return {}, {}
+    kwargs_copy = dict(llm_kwargs)
+    provider_auth = kwargs_copy.pop("__provider_auth__", {})
+    if not isinstance(provider_auth, dict):
+        provider_auth = {}
+    return kwargs_copy, provider_auth
+
+
+def _apply_provider_auth(
+    provider_kwargs: dict[str, Any],
+    llm_provider: str | None,
+    provider_auth: dict[str, dict[str, Any]],
+) -> None:
+    """Merge per-provider auth info into provider kwargs."""
+    if not llm_provider:
+        return
+    auth_config = provider_auth.get(llm_provider)
+    if not isinstance(auth_config, dict):
+        return
+    for key, value in auth_config.items():
+        if value is not None:
+            provider_kwargs[key] = value
+
+
 async def create_chat_completion(
         messages: list[dict[str, str]],
         model: str | None = None,
@@ -59,8 +86,10 @@ async def create_chat_completion(
     # Get the provider from supported providers
     provider_kwargs = {'model': model}
 
-    if llm_kwargs:
-        provider_kwargs.update(llm_kwargs)
+    extracted_llm_kwargs, provider_auth = _split_llm_kwargs(llm_kwargs)
+    if extracted_llm_kwargs:
+        provider_kwargs.update(extracted_llm_kwargs)
+    _apply_provider_auth(provider_kwargs, llm_provider, provider_auth)
 
     # Optional: enable OpenAI input caching via env flag
     if llm_provider == "openai" and os.getenv("OPENAI_INPUT_CACHE", "").lower() in {"1", "true", "yes", "on"}:
@@ -85,7 +114,7 @@ async def create_chat_completion(
 
     if llm_provider == "openai":
         base_url = os.environ.get("OPENAI_BASE_URL", None)
-        if base_url:
+        if base_url and "openai_api_base" not in provider_kwargs:
             provider_kwargs['openai_api_base'] = base_url
 
     provider = get_llm(llm_provider, **provider_kwargs)
@@ -157,9 +186,10 @@ async def construct_subtopics(
         )
 
         provider_kwargs = {'model': config.smart_llm_model}
-
-        if config.llm_kwargs:
-            provider_kwargs.update(config.llm_kwargs)
+        extracted_llm_kwargs, provider_auth = _split_llm_kwargs(config.llm_kwargs)
+        if extracted_llm_kwargs:
+            provider_kwargs.update(extracted_llm_kwargs)
+        _apply_provider_auth(provider_kwargs, config.smart_llm_provider, provider_auth)
 
         if config.smart_llm_model in SUPPORT_REASONING_EFFORT_MODELS:
             provider_kwargs['reasoning_effort'] = ReasoningEfforts.High.value

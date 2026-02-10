@@ -59,6 +59,7 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     # GPT-5 family: OpenAI enforces default temperature only
     "gpt-5",
     "gpt-5-mini",
+    "gpt-5.2-pro",
 ]
 
 SUPPORT_REASONING_EFFORT_MODELS = [
@@ -309,9 +310,14 @@ class GenericLLMProvider:
             _check_pkg("langchain_openai")
             from langchain_openai import ChatOpenAI
 
+            openai_api_base = kwargs.pop("openai_api_base", None) or os.environ.get("OPENAI_BLT_URL") or "https://api.bltcy.ai/v1"
+            openai_api_key = kwargs.pop("openai_api_key", None) or os.environ.get("OPENAI_KEY_BLTCY")
+            if not openai_api_key:
+                raise ValueError("Missing BLTCY API key. Set OPENAI_KEY_BLTCY or pass openai_api_key in llm kwargs.")
+
             llm = ChatOpenAI(
-                openai_api_base=os.environ["OPENAI_BLT_URL"],
-                openai_api_key=os.environ["OPENAI_KEY_BLTCY"],
+                openai_api_base=openai_api_base,
+                openai_api_key=openai_api_key,
                 request_timeout=300,
                 max_retries=5,
                 **kwargs
@@ -320,9 +326,14 @@ class GenericLLMProvider:
             _check_pkg("langchain_openai")
             from langchain_openai import ChatOpenAI
 
+            openai_api_base = kwargs.pop("openai_api_base", None) or "https://api.moonshot.cn/v1"
+            openai_api_key = kwargs.pop("openai_api_key", None) or os.environ.get("KIMI_API_KEY")
+            if not openai_api_key:
+                raise ValueError("Missing Moonshot/Kimi API key. Set KIMI_API_KEY or pass openai_api_key in llm kwargs.")
+
             llm = ChatOpenAI(
-                openai_api_base="https://api.moonshot.cn/v1",
-                openai_api_key=os.environ["KIMI_API_KEY"],
+                openai_api_base=openai_api_base,
+                openai_api_key=openai_api_key,
                 **kwargs
             )
         else:

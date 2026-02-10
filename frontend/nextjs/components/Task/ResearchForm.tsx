@@ -4,9 +4,10 @@ import ToneSelector from "../Settings/ToneSelector";
 import ApiProviderSelector from "../Settings/ApiProviderSelector";
 import MCPSelector from "../Settings/MCPSelector";
 import LayoutSelector from "../Settings/LayoutSelector";
+import AdvancedResearchSettings from "../Settings/AdvancedResearchSettings";
 import DomainFilter from "./DomainFilter";
 import { useAnalytics } from "../../hooks/useAnalytics";
-import { ChatBoxSettings, Domain, MCPConfig } from '@/types/data';
+import { AdvancedSettings, ChatBoxSettings, Domain, MCPConfig, ModelConfig } from '@/types/data';
 
 interface ResearchFormProps {
   chatBoxSettings: ChatBoxSettings;
@@ -29,7 +30,7 @@ export default function ResearchForm({
   const [newDomain, setNewDomain] = useState('');
 
   // Destructure necessary fields from chatBoxSettings
-  let { report_type, report_source, tone, layoutType, api_provider } = chatBoxSettings;
+  let { report_type, report_source, tone, layoutType, model_config } = chatBoxSettings;
 
   const [domains, setDomains] = useState<Domain[]>([]);
 
@@ -94,11 +95,17 @@ export default function ResearchForm({
     }));
   };
 
-  const onApiProviderChange = (e: { target: { value: any } }) => {
-    const { value } = e.target;
+  const onModelConfigChange = (config: ModelConfig) => {
     setChatBoxSettings((prevSettings: any) => ({
       ...prevSettings,
-      api_provider: value,
+      model_config: config,
+    }));
+  };
+
+  const onAdvancedSettingsChange = (settings: AdvancedSettings) => {
+    setChatBoxSettings((prevSettings: any) => ({
+      ...prevSettings,
+      advanced_settings: settings,
     }));
   };
 
@@ -174,8 +181,14 @@ export default function ResearchForm({
       />
 
       <ApiProviderSelector
-        apiProvider={api_provider}
-        onApiProviderChange={onApiProviderChange}
+        modelConfig={model_config}
+        onModelConfigChange={onModelConfigChange}
+      />
+
+      <AdvancedResearchSettings
+        reportType={report_type}
+        settings={chatBoxSettings.advanced_settings}
+        onChange={onAdvancedSettingsChange}
       />
 
       <LayoutSelector layoutType={layoutType || 'copilot'} onLayoutChange={onLayoutChange} />

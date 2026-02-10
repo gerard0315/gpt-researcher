@@ -22,6 +22,9 @@ class DetailedReport:
         complement_source_urls: bool = False,
         mcp_configs=None,
         mcp_strategy=None,
+        model_overrides=None,
+        llm_provider_credentials=None,
+        config_overrides=None,
     ):
         self.query = query
         self.report_type = report_type
@@ -56,6 +59,12 @@ class DetailedReport:
             gpt_researcher_params["mcp_configs"] = mcp_configs
         if mcp_strategy is not None:
             gpt_researcher_params["mcp_strategy"] = mcp_strategy
+        if model_overrides is not None:
+            gpt_researcher_params["model_overrides"] = model_overrides
+        if llm_provider_credentials is not None:
+            gpt_researcher_params["llm_provider_credentials"] = llm_provider_credentials
+        if config_overrides is not None:
+            gpt_researcher_params["config_overrides"] = config_overrides
 
         self.gpt_researcher = GPTResearcher(**gpt_researcher_params)
         self.existing_headers: List[Dict] = []
@@ -121,7 +130,10 @@ class DetailedReport:
             source_urls=self.source_urls,
             # Propagate MCP configuration so follow-up researchers can use MCP
             mcp_configs=self.gpt_researcher.mcp_configs,
-            mcp_strategy=self.gpt_researcher.mcp_strategy
+            mcp_strategy=self.gpt_researcher.mcp_strategy,
+            model_overrides=self.gpt_researcher.model_overrides,
+            llm_provider_credentials=self.gpt_researcher.llm_provider_credentials,
+            config_overrides=self.gpt_researcher.config_overrides,
         )
 
         subtopic_assistant.context = list(set(self.global_context))

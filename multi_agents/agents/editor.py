@@ -34,6 +34,8 @@ class EditorAgent:
 
         prompt = self._create_planning_prompt(
             initial_research, include_human_feedback, human_feedback, max_sections)
+        provider_auth = task.get("llm_provider_credentials")
+        runtime_llm_kwargs = {"__provider_auth__": provider_auth} if provider_auth else None
 
         print_agent_output(
             "Planning an outline layout based on initial research...", agent="EDITOR")
@@ -41,6 +43,8 @@ class EditorAgent:
             prompt=prompt,
             model=task.get("model"),
             response_format="json",
+            llm_provider=task.get("llm_provider"),
+            llm_kwargs=runtime_llm_kwargs,
         )
 
         return {

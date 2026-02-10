@@ -7,6 +7,7 @@ import { preprocessOrderedData } from "@/utils/dataProcessing";
 import { ChatBoxSettings, Data, ChatData, ChatMessage, QuestionData } from "@/types/data";
 import { toast } from "react-hot-toast";
 import { getAppropriateLayout } from "@/utils/getLayout";
+import { DEFAULT_ADVANCED_SETTINGS } from "@/constants/researchSettings";
 
 import ResearchPageLayout from "@/components/layouts/ResearchPageLayout";
 import CopilotLayout from "@/components/layouts/CopilotLayout";
@@ -40,11 +41,12 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
     tone: "Objective",
     domains: [],
     defaultReportType: "deep",
-    layoutType: 'copilot',
+    layoutType: 'research',
     mcp_enabled: false,
     mcp_configs: [],
     mcp_strategy: "fast",
-    api_provider: "bltcy",
+    model_config: { fast: "official_gpt4o", smart: "kimi_k2_turbo", strategic: "bltcy_gpt52pro" },
+    advanced_settings: { ...DEFAULT_ADVANCED_SETTINGS },
   };
 
   // Initialize with defaults to avoid hydration mismatch
@@ -56,9 +58,17 @@ export default function ResearchPage({ params }: { params: { id: string } }) {
     if (savedSettings) {
       try {
         const parsedSettings = JSON.parse(savedSettings);
+        const normalizedLayoutType = parsedSettings.layoutType === "document"
+          ? "research"
+          : parsedSettings.layoutType;
         setChatBoxSettings({
           ...defaultChatBoxSettings,
           ...parsedSettings,
+          layoutType: normalizedLayoutType || defaultChatBoxSettings.layoutType,
+          advanced_settings: {
+            ...DEFAULT_ADVANCED_SETTINGS,
+            ...(parsedSettings.advanced_settings || {}),
+          },
         });
       } catch (e) {
         console.error('Error parsing saved settings:', e);

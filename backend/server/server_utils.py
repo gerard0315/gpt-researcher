@@ -161,7 +161,8 @@ async def handle_start_command(websocket, data: str, manager):
         mcp_enabled,
         mcp_strategy,
         mcp_configs,
-        api_provider,
+        model_config,
+        advanced_settings,
     ) = extract_command_data(json_data)
 
     if not task or not report_type:
@@ -193,7 +194,8 @@ async def handle_start_command(websocket, data: str, manager):
         mcp_enabled,
         mcp_strategy,
         mcp_configs,
-        api_provider,
+        model_config,
+        advanced_settings,
     )
     report = str(report)
     file_paths = await generate_report_files(report, sanitized_filename)
@@ -369,5 +371,6 @@ def extract_command_data(json_data: Dict) -> tuple:
         json_data.get("mcp_enabled", False),
         json_data.get("mcp_strategy", "fast"),
         json_data.get("mcp_configs", []),
-        json_data.get("api_provider", "official"),
+        json_data.get("model_config", {"fast": "official_gpt4o", "smart": "kimi_k2_turbo", "strategic": "bltcy_gpt52pro"}),
+        json_data.get("advanced_settings", {}),
     )

@@ -59,6 +59,7 @@ class GPTResearcher:
         mcp_configs: list[dict] | None = None,
         mcp_max_iterations: int | None = None,
         mcp_strategy: str | None = None,
+        config_overrides: dict | None = None,
         **kwargs
     ):
         """
@@ -113,11 +114,20 @@ class GPTResearcher:
                 - "fast" (default): Run MCP once with original query for best performance
                 - "deep": Run MCP for all sub-queries for maximum thoroughness  
                 - "disabled": Skip MCP entirely, use only web retrievers
+            config_overrides (dict, optional): Per-request config overrides applied
+                after loading defaults/environment. Keys should match Config attribute
+                names (lower-case), e.g. deep_research_breadth, deep_research_depth.
         """
+        self.model_overrides = kwargs.pop("model_overrides", None)
+        self.llm_provider_credentials = kwargs.pop("llm_provider_credentials", None)
+        self.config_overrides = config_overrides or {}
         self.kwargs = kwargs
         self.query = query
         self.report_type = report_type
         self.cfg = Config(config_path)
+        self._apply_config_overrides(self.config_overrides)
+        self._apply_model_overrides(self.model_overrides)
+        self._apply_llm_provider_credentials(self.llm_provider_credentials)
         self.cfg.set_verbose(verbose)
         self.report_source = report_source if report_source else getattr(self.cfg, 'report_source', None)
         self.report_format = report_format
@@ -171,6 +181,55 @@ class GPTResearcher:
 
         # Handle MCP strategy configuration with backwards compatibility
         self.mcp_strategy = self._resolve_mcp_strategy(mcp_strategy, mcp_max_iterations)
+
+    def _apply_model_overrides(self, model_overrides: dict | None) -> None:
+        """Apply per-request FAST/SMART/STRATEGIC model overrides."""
+        if not model_overrides:
+            return
+        if not isinstance(model_overrides, dict):
+            raise ValueError("model_overrides must be a dict with optional fast/smart/strategic keys.")
+
+        attr_map = {
+            "fast": ("fast_llm", "fast_llm_provider", "fast_llm_model"),
+            "smart": ("smart_llm", "smart_llm_provider", "smart_llm_model"),
+            "strategic": ("strategic_llm", "strategic_llm_provider", "strategic_llm_model"),
+        }
+        for tier, llm_string in model_overrides.items():
+            if tier not in attr_map:
+                raise ValueError(f"Unsupported model override tier: {tier}")
+            if not llm_string:
+                continue
+            provider, model = self.cfg.parse_llm(llm_string)
+            llm_attr, provider_attr, model_attr = attr_map[tier]
+            setattr(self.cfg, llm_attr, llm_string)
+            setattr(self.cfg, provider_attr, provider)
+            setattr(self.cfg, model_attr, model)
+
+    def _apply_config_overrides(self, config_overrides: dict | None) -> None:
+        """Apply per-request runtime config overrides to the loaded config object."""
+        if not config_overrides:
+            return
+        if not isinstance(config_overrides, dict):
+            raise ValueError("config_overrides must be a dict keyed by Config attribute names.")
+
+        for key, value in config_overrides.items():
+            if not hasattr(self.cfg, key):
+                raise ValueError(f"Unsupported config override key: {key}")
+            setattr(self.cfg, key, value)
+
+    def _apply_llm_provider_credentials(self, llm_provider_credentials: dict | None) -> None:
+        """
+        Inject per-provider auth into llm_kwargs.
+        This avoids mutating global process env for per-request credential routing.
+        """
+        if not llm_provider_credentials:
+            return
+        if not isinstance(llm_provider_credentials, dict):
+            raise ValueError("llm_provider_credentials must be a dict keyed by provider name.")
+
+        llm_kwargs = dict(self.cfg.llm_kwargs or {})
+        llm_kwargs["__provider_auth__"] = llm_provider_credentials
+        self.cfg.llm_kwargs = llm_kwargs
 
     def _resolve_mcp_strategy(self, mcp_strategy: str | None, mcp_max_iterations: int | None) -> str:
         """

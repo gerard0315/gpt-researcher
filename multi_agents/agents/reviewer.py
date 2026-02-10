@@ -40,8 +40,15 @@ Guidelines: {guidelines}\nDraft: {draft_state.get("draft")}\n
             {"role": "system", "content": TEMPLATE},
             {"role": "user", "content": review_prompt},
         ]
+        provider_auth = task.get("llm_provider_credentials")
+        runtime_llm_kwargs = {"__provider_auth__": provider_auth} if provider_auth else None
 
-        response = await call_model(prompt, model=task.get("model"))
+        response = await call_model(
+            prompt,
+            model=task.get("model"),
+            llm_provider=task.get("llm_provider"),
+            llm_kwargs=runtime_llm_kwargs,
+        )
 
         if task.get("verbose"):
             if self.websocket and self.stream_output:

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple, Callable, Optional
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import tool
 
-from .llm import create_chat_completion
+from .llm import create_chat_completion, _apply_provider_auth, _split_llm_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +57,12 @@ async def create_chat_completion_with_tools(
         from ..llm_provider.generic.base import GenericLLMProvider
         
         # Create LLM provider using the config
+        extracted_llm_kwargs, provider_auth = _split_llm_kwargs(llm_kwargs)
         provider_kwargs = {
             'model': model,
-            **(llm_kwargs or {})
+            **extracted_llm_kwargs,
         }
+        _apply_provider_auth(provider_kwargs, llm_provider, provider_auth)
         
         llm_provider_instance = GenericLLMProvider.from_provider(
             llm_provider, 

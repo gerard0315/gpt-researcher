@@ -7,7 +7,11 @@ from datetime import datetime, timedelta
 from gpt_researcher.llm_provider.generic.base import ReasoningEfforts
 from ..utils.llm import create_chat_completion
 from ..utils.enum import ReportType, ReportSource, Tone
-from ..actions.query_processing import get_search_results
+from ..actions.query_processing import (
+    get_search_results,
+    ground_generated_queries,
+    get_working_query_for_planning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +66,30 @@ class DeepResearchSkill:
 
     async def generate_search_queries(self, query: str, num_queries: int = 3) -> List[Dict[str, str]]:
         """Generate SERP queries for research"""
+        working_query = await get_working_query_for_planning(
+            query=query,
+            cfg=self.researcher.cfg,
+            cost_callback=self.researcher.add_costs,
+        )
+
         messages = [
-            {"role": "system", "content": "You are an expert researcher generating search queries."},
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert researcher generating search queries. "
+                    "Do not invent specific facts (funding amounts, valuations, named investors, dates, legal entities) "
+                    "unless explicitly present in the input. Keep all queries anchored to the same primary subject."
+                ),
+            },
             {"role": "user",
-             "content": f"Given the following prompt, generate {num_queries} unique search queries to research the topic thoroughly. For each query, provide a research goal. Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: {query}"}
+             "content": (
+                 f"Given the following prompt, generate {num_queries} unique search queries to research the topic thoroughly. "
+                 "For each query, provide a research goal. "
+                 "Use neutral, verification-oriented wording and avoid speculative exact numbers or names not present in the prompt. "
+                 "If a domain is present, include it in query framing. "
+                 "Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: "
+                 f"{working_query}"
+             )}
         ]
 
         response = await create_chat_completion(
@@ -92,14 +116,55 @@ class DeepResearchSkill:
         if current_query:
             queries.append(current_query)
 
-        return queries[:num_queries]
+        queries = queries[:num_queries]
+        generated_query_text = [item.get("query", "") for item in queries if item.get("query")]
+        grounded_query_text = ground_generated_queries(
+            generated_query_text,
+            query,
+            max_queries=num_queries,
+        )
+
+        query_to_goal = {
+            item.get("query", ""): item.get("researchGoal", "")
+            for item in queries
+            if item.get("query")
+        }
+
+        grounded_queries: list[dict[str, str]] = []
+        for grounded_query in grounded_query_text:
+            goal = query_to_goal.get(grounded_query, "").strip()
+            if not goal:
+                lowered = grounded_query.lower()
+                if "site:" in lowered:
+                    goal = "Verify subject identity and first-party facts on official sources."
+                elif any(token in lowered for token in ["funding", "investor", "valuation", "融资", "投资"]):
+                    goal = "Collect externally verifiable capital and financing evidence for the same subject."
+                elif any(token in lowered for token in ["product", "pricing", "api", "benchmark", "技术", "产品"]):
+                    goal = "Collect product and technical evidence directly tied to the target subject."
+                else:
+                    goal = "Collect reliable evidence tied to the target subject."
+            grounded_queries.append({"query": grounded_query, "researchGoal": goal})
+
+        if not grounded_queries:
+            grounded_queries = [{
+                "query": working_query,
+                "researchGoal": "Collect reliable evidence tied to the target subject.",
+            }]
+
+        return grounded_queries[:num_queries]
 
     async def generate_research_plan(self, query: str, num_questions: int = 3) -> List[str]:
         """Generate follow-up questions to clarify research direction"""
+        working_query = await get_working_query_for_planning(
+            query=query,
+            cfg=self.researcher.cfg,
+            cost_callback=self.researcher.add_costs,
+        )
+
         # Get initial search results to inform query generation
         # Pass the researcher so MCP retriever receives cfg and mcp_configs
         search_results = await get_search_results(
-            query,
+            working_query,
             self.researcher.retrievers[0],
             researcher=self.researcher
         )
@@ -111,7 +176,7 @@ class DeepResearchSkill:
         messages = [
             {"role": "system", "content": "You are an expert researcher. Your task is to analyze the original query and search results, then generate targeted questions that explore different aspects and time periods of the topic."},
             {"role": "user",
-             "content": f"""Original query: {query}
+             "content": f"""Original query: {working_query}
 
 Current time: {current_time}
 
@@ -119,6 +184,10 @@ Search results:
 {search_results}
 
 Based on these results, the original query, and the current time, generate {num_questions} unique questions. Each question should explore a different aspect or time period of the topic, considering recent developments up to {current_time}.
+Do not introduce exact figures, valuations, investor names, or other hard facts unless they are explicitly present in the query or the provided search results.
+Keep questions as hypotheses to validate, not assumptions.
+Do not assume legal jurisdiction, incorporation country/state, or founder identity unless explicitly supported by provided evidence.
+When entity names are ambiguous, include disambiguation cues from official domain/product/founder details present in evidence.
 
 Format each question on a new line starting with 'Question: '"""}
         ]
@@ -246,7 +315,10 @@ Format each question on a new line starting with 'Question: '"""}
                         visited_urls=self.visited_urls,
                         # Propagate MCP configuration to nested researchers
                         mcp_configs=self.researcher.mcp_configs,
-                        mcp_strategy=self.researcher.mcp_strategy
+                        mcp_strategy=self.researcher.mcp_strategy,
+                        model_overrides=self.researcher.model_overrides,
+                        llm_provider_credentials=self.researcher.llm_provider_credentials,
+                        config_overrides=self.researcher.config_overrides,
                     )
 
                     # Conduct research
@@ -313,8 +385,9 @@ Format each question on a new line starting with 'Question: '"""}
 
                 # Create next query from research goal and follow-up questions
                 next_query = f"""
+                Primary subject (must remain fixed): {self.researcher.query}
                 Previous research goal: {result['researchGoal']}
-                Follow-up questions: {' '.join(result['followUpQuestions'])}
+                Follow-up questions (hypotheses to validate, not assumed facts): {' '.join(result['followUpQuestions'])}
                 """
 
                 # Recursive research
@@ -361,12 +434,14 @@ Format each question on a new line starting with 'Question: '"""}
         initial_costs = self.researcher.get_costs()
 
         follow_up_questions = await self.generate_research_plan(self.researcher.query)
-        answers = ["Automatically proceeding with research"] * len(follow_up_questions)
-
-        qa_pairs = [f"Q: {q}\nA: {a}" for q, a in zip(follow_up_questions, answers)]
-        combined_query = f"""
-        Initial Query: {self.researcher.query}\nFollow - up Questions and Answers:\n
-        """ + "\n".join(qa_pairs)
+        if follow_up_questions:
+            combined_query = (
+                f"Primary subject (must remain fixed): {self.researcher.query}\n"
+                "Potential follow-up questions (hypotheses, do not assume true):\n"
+                + "\n".join(f"- {question}" for question in follow_up_questions)
+            )
+        else:
+            combined_query = self.researcher.query
 
         results = await self.deep_research(
             query=combined_query,

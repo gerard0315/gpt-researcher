@@ -1,5 +1,7 @@
 import warnings
+import re
 from datetime import date, datetime, timezone
+from urllib.parse import urlparse
 
 from langchain_core.documents import Document
 
@@ -34,6 +36,82 @@ class PromptFamily:
         or providers
         """
         self.cfg = config
+
+    @staticmethod
+    def _extract_entity_hints(text: str) -> Dict[str, List[str]]:
+        if not text:
+            return {"domains": [], "aliases": []}
+
+        url_pattern = re.compile(r"https?://[^\s)]+", re.IGNORECASE)
+        domain_pattern = re.compile(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", re.IGNORECASE)
+        company_label_patterns = [
+            r"company\s*name\s*[:：]\s*([^\n\r;；。]+)",
+            r"subject\s*[:：]\s*([^\n\r;；。]+)",
+            r"公司名称\s*[:：]\s*([^\n\r;；。]+)",
+            r"项目名\s*[:：]\s*([^\n\r;；。]+)",
+        ]
+
+        def _dedupe(values: List[str]) -> List[str]:
+            return list(dict.fromkeys(values))
+
+        domains: list[str] = []
+        aliases: list[str] = []
+
+        for raw_url in url_pattern.findall(text):
+            parsed = urlparse(raw_url.strip())
+            domain = (parsed.netloc or "").lower().strip(".")
+            if domain.startswith("www."):
+                domain = domain[4:]
+            if domain:
+                domains.append(domain)
+
+        for domain_match in domain_pattern.findall(text):
+            domain = domain_match.lower().strip(".")
+            if domain.startswith("www."):
+                domain = domain[4:]
+            if domain:
+                domains.append(domain)
+
+        for pattern in company_label_patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            alias = re.sub(r"\s+", " ", match.group(1)).strip()
+            if alias:
+                aliases.append(alias)
+
+        for quoted in re.findall(r"[\"“”']([^\"“”']{3,80})[\"“”']", text):
+            alias = re.sub(r"\s+", " ", quoted).strip()
+            if alias and re.search(r"[a-zA-Z]", alias):
+                aliases.append(alias)
+
+        return {"domains": _dedupe(domains), "aliases": _dedupe(aliases)}
+
+    @staticmethod
+    def _build_entity_disambiguation_prompt(text: str) -> str:
+        hints = PromptFamily._extract_entity_hints(text)
+        if not hints["domains"] and not hints["aliases"]:
+            return ""
+
+        primary_domain = hints["domains"][0] if hints["domains"] else ""
+        primary_alias = hints["aliases"][0] if hints["aliases"] else ""
+        target_label = ", ".join([part for part in [primary_alias, primary_domain] if part]) or "the target entity"
+
+        canonical_line = (
+            f'- Treat "{primary_domain}" as the canonical entity identifier.'
+            if primary_domain
+            else "- Treat the provided subject identifier as canonical."
+        )
+
+        return f"""
+Entity Disambiguation Constraints (critical):
+- Primary target entity: {target_label}
+{canonical_line}
+- Never merge facts from similarly named entities with different domains, founders, locations, legal IDs, or product repositories.
+- If a source cannot be confidently mapped to the canonical entity, treat it as ambiguous and do not use it for factual claims.
+- If evidence conflicts across similarly named entities, explicitly mark it as "conflicting/unknown, needs verification".
+- Do not invent legal registrations, founder identities, locations, product repos, or timelines.
+"""
 
     # MCP-specific prompts
     @staticmethod
@@ -150,6 +228,7 @@ Context: {context}
 
 Use this context to inform and refine your search queries. The context provides real-time web information that can help you generate more specific and relevant queries. Consider any current events, recent developments, or specific details mentioned in the context that could enhance the search queries.
 """ if context else ""
+        entity_disambiguation_prompt = PromptFamily._build_entity_disambiguation_prompt(task)
 
         dynamic_example = ", ".join([f'"query {i+1}"' for i in range(max_iterations)])
 
@@ -158,6 +237,15 @@ Use this context to inform and refine your search queries. The context provides 
 Assume the current date is {datetime.now(timezone.utc).strftime('%B %d, %Y')} if required.
 
 {context_prompt}
+{entity_disambiguation_prompt}
+Hard constraints:
+- Keep every query anchored to the same primary subject in the task.
+- If the task includes a person/company/product/domain identifier, include at least one identifier in every query.
+- If the task is non-English or mixed-language, first translate it internally to English and write queries in English.
+- Do NOT invent specific facts (exact funding amounts, valuations, investor names, legal entity numbers, dates) unless explicitly present in the task/context.
+- For same-name entities, use disambiguating terms (official domain, founder, product, geography) to avoid collisions.
+- Prefer verification-oriented phrasing (official site/docs/filings/press releases/independent confirmation) over speculative claims.
+
 You must respond with a list of strings in the following format: [{dynamic_example}].
 The response should contain ONLY the list.
 """
@@ -193,6 +281,7 @@ You MUST write all used source document names at the end of the report as refere
 """
 
         tone_prompt = f"Write the report in a {tone.value} tone." if tone else ""
+        entity_disambiguation_prompt = PromptFamily._build_entity_disambiguation_prompt(question)
 
         return f"""
 Information: "{context}"
@@ -214,6 +303,8 @@ Please follow all of the following guidelines in your report:
 - Don't forget to add a reference list at the end of the report in {report_format} format and full url links without hyperlinks.
 - {reference_prompt}
 - {tone_prompt}
+{entity_disambiguation_prompt}
+- If required evidence is missing, write "unknown / needs verification" instead of guessing.
 
 You MUST write the report in the following language: {language}.
 Please do your best, this is very important to my career.
@@ -356,6 +447,7 @@ You MUST write all used source document names at the end of the report as refere
 """
 
         tone_prompt = f"Write the report in a {tone.value} tone." if tone else ""
+        entity_disambiguation_prompt = PromptFamily._build_entity_disambiguation_prompt(question)
 
         return f"""
 Using the following hierarchically researched information and citations:
@@ -384,6 +476,8 @@ Additional requirements:
 - Use in-text citation references in {report_format} format and make it with markdown hyperlink placed at the end of the sentence or paragraph that references them like this: ([in-text citation](url)).
 - {tone_prompt}
 - Write in {language}
+{entity_disambiguation_prompt}
+- If required evidence is missing, write "unknown / needs verification" instead of guessing.
 
 {reference_prompt}
 

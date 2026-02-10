@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { Data, ChatBoxSettings, QuestionData } from '../types/data';
 import { getHost } from '../helpers/getHost';
+import { DEFAULT_ADVANCED_SETTINGS } from '../constants/researchSettings';
 
 export const useWebSocket = (
   setOrderedData: React.Dispatch<React.SetStateAction<Data[]>>,
@@ -72,7 +73,11 @@ export const useWebSocket = (
 
         const domainFilters = JSON.parse(localStorage.getItem('domainFilters') || '[]');
         const domains = domainFilters ? domainFilters.map((domain: any) => domain.value) : [];
-        const { report_type, report_source, tone, mcp_enabled, mcp_configs, mcp_strategy, api_provider } = chatBoxSettings;
+        const { report_type, report_source, tone, mcp_enabled, mcp_configs, mcp_strategy, model_config, advanced_settings } = chatBoxSettings;
+        const mergedAdvancedSettings = {
+          ...DEFAULT_ADVANCED_SETTINGS,
+          ...(advanced_settings || {}),
+        };
 
         // Start a new research
         try {
@@ -86,7 +91,8 @@ export const useWebSocket = (
             mcp_enabled: mcp_enabled || false,
             mcp_strategy: mcp_strategy || "fast",
             mcp_configs: mcp_configs || [],
-            api_provider: api_provider || "official"
+            model_config: model_config || { fast: "official_gpt4o", smart: "kimi_k2_turbo", strategic: "bltcy_gpt52pro" },
+            advanced_settings: mergedAdvancedSettings,
           };
 
           // Make sure we have a properly formatted command with a space after start
