@@ -3,7 +3,11 @@
     "allow": [
       "Bash(/Users/YiranTao/INP/gpt-researcher/.venv/bin/pip install:*)",
       "Bash(python3:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(python -m pytest:*)"
     ]
   }
 }

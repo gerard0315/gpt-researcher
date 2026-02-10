@@ -71,3 +71,22 @@ async def test_content_update():
     with open(handler.events_file, 'r') as f:
         log_data = json.load(f)
         assert log_data['content']['query'] == "test query"
+
+
+@pytest.mark.asyncio
+async def test_streamed_report_and_cost_updates_are_aggregated_into_content_snapshot():
+    mock_websocket = AsyncMock()
+    mock_websocket.send_json = AsyncMock()
+
+    handler = CustomLogsHandler(mock_websocket, "test_query")
+
+    await handler.send_json({"type": "report", "output": "first chunk "})
+    await handler.send_json({"type": "report", "output": "second chunk"})
+    await handler.send_json({"type": "cost", "data": {"total_cost": "$0.02262052"}})
+
+    with open(handler.log_file, "r") as f:
+        log_data = json.load(f)
+        assert log_data["content"]["report"] == "first chunk second chunk"
+        assert log_data["content"]["costs"] == pytest.approx(0.02262052, rel=1e-9)
+        assert "type" not in log_data["content"]
+        assert "output" not in log_data["content"]

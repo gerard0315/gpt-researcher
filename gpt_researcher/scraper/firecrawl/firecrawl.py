@@ -1,27 +1,52 @@
 from bs4 import BeautifulSoup
+import itertools
 import os
 from ..utils import get_relevant_images
+from ...utils.api_keys import collect_api_keys
+
+# Module-level state for round-robin key rotation
+_firecrawl_state: dict = {"cycle": None, "keys": ()}
+
+
+def _get_firecrawl_keys() -> list[str]:
+    keys = collect_api_keys(
+        primary_env_var="FIRECRAWL_API_KEY",
+        fallback_env_var="FIRECRAWL_API_KEY_FALLBACK",
+        list_env_var="FIRECRAWL_API_KEYS",
+    )
+    if not keys:
+        raise Exception(
+            "FireCrawl API key not found. Please set FIRECRAWL_API_KEY (or FIRECRAWL_API_KEYS)."
+        )
+    return keys
+
+
+def _next_firecrawl_key() -> str:
+    keys = _get_firecrawl_keys()
+    keys_tuple = tuple(keys)
+    if _firecrawl_state["cycle"] is None or _firecrawl_state["keys"] != keys_tuple:
+        _firecrawl_state["cycle"] = itertools.cycle(keys)
+        _firecrawl_state["keys"] = keys_tuple
+    return next(_firecrawl_state["cycle"])
+
 
 class FireCrawl:
 
-    def __init__(self, link, session=None):
+    def __init__(self, link, session=None, api_key: str | None = None):
         self.link = link
         self.session = session
+        self._api_key_override = (api_key or "").strip()
         from firecrawl import FirecrawlApp
         self.firecrawl = FirecrawlApp(api_key=self.get_api_key(), api_url=self.get_server_url())
 
     def get_api_key(self) -> str:
         """
-        Gets the FireCrawl API key
-        Returns:
-        Api key (str)
+        Gets the next FireCrawl API key from the rotation pool.
+        FIRECRAWL_API_KEY may be a single key or a comma-separated list of keys.
         """
-        try:
-            api_key = os.environ["FIRECRAWL_API_KEY"]
-        except KeyError:
-            raise Exception(
-                "FireCrawl API key not found. Please set the FIRECRAWL_API_KEY environment variable.")
-        return api_key
+        if self._api_key_override:
+            return self._api_key_override
+        return _next_firecrawl_key()
 
     def get_server_url(self) -> str:
         """

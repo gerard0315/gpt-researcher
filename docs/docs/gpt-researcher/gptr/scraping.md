@@ -1,6 +1,6 @@
 # Scraping Options
 
-GPT Researcher now offers various methods for web scraping: static scraping with BeautifulSoup, dynamic scraping with Selenium, and High scale scraping with Tavily Extract. This document explains how to switch between these methods and the benefits of each approach.
+GPT Researcher now offers various methods for web scraping: static scraping with BeautifulSoup, dynamic scraping with Selenium, and high-scale API scraping with Tavily Extract, FireCrawl, and Scrape.do. This document explains how to switch between these methods and the benefits of each approach.
 
 ## Configuring Scraping Method
 
@@ -21,7 +21,7 @@ You can choose your preferred scraping method by setting the `SCRAPER` environme
    pip install zendriver
    ```
 
-3. For **production** use cases, you can set the Scraper to `tavily_extract` or `firecrawl`. [Tavily](https://tavily.com) allows you to scrape sites at scale without the hassle of setting up proxies, managing cookies, or dealing with CAPTCHAs. Please note that you need to have a Tavily account and [API key](https://app.tavily.com) to use this option. To learn more about Tavily Extract [see here](https://docs.tavily.com/docs/python-sdk/tavily-extract/getting-started).
+3. For **production** use cases, you can set the scraper to `tavily_extract`, `firecrawl`, `scrape_do`, or `firecrawl_scrape_do_random`. [Tavily](https://tavily.com) allows you to scrape sites at scale without the hassle of setting up proxies, managing cookies, or dealing with CAPTCHAs. Please note that you need to have a Tavily account and [API key](https://app.tavily.com) to use this option. To learn more about Tavily Extract [see here](https://docs.tavily.com/docs/python-sdk/tavily-extract/getting-started).
     Make sure to first install the pip package `tavily-python`. Then:
    ```
    export SCRAPER="tavily_extract"
@@ -30,6 +30,17 @@ You can choose your preferred scraping method by setting the `SCRAPER` environme
    Make sure to install the pip package `firecrawl-py`. Then:
    ```bash
    export SCRAPER="firecrawl"
+   ```
+   [Scrape.do](https://scrape.do) also supports rendered scraping and markdown output through a simple HTTP API. Set:
+   ```bash
+   export SCRAPER="scrape_do"
+   export SCRAPE_DO_API_KEY="<your-scrape-do-api-key>"
+   ```
+   For random load distribution across 2 Firecrawl keys + 1 Scrape.do key:
+   ```bash
+   export SCRAPER="firecrawl_scrape_do_random"
+   export FIRECRAWL_API_KEY="<firecrawl-key-1>,<firecrawl-key-2>"
+   export SCRAPE_DO_API_KEY="<your-scrape-do-api-key>"
    ```
 
 Note: If not set, GPT Researcher will default to BeautifulSoup for scraping.
@@ -164,6 +175,44 @@ Usage Considerations:
 - Best for production environments where reliability is crucial (for their cloud service)
 - Ideal for businesses and applications that need consistent scraping results
 - Need robust scraping option for personal use
+
+### Scrape.do (Production API Scraper)
+When `SCRAPER="scrape_do"`, GPT Researcher uses the Scrape.do API for scraping. This method:
+
+- Calls Scrape.do's hosted endpoint (`https://api.scrape.do/`)
+- Supports rendered scraping (`render=true`) for JS-heavy pages
+- Supports markdown output (`output=markdown`) for LLM-friendly content
+
+Setup:
+1. Create an account at [scrape.do](https://scrape.do)
+2. Get your API key
+3. Set environment variables:
+   ```bash
+   export SCRAPER="scrape_do"
+   export SCRAPE_DO_API_KEY="<your-scrape-do-api-key>"
+   ```
+4. Optional tuning:
+   ```bash
+   export SCRAPE_DO_OUTPUT="markdown"   # default
+   export SCRAPE_DO_RENDER="true"       # enable browser rendering
+   export SCRAPE_DO_SUPER="false"       # optional premium mode
+   export SCRAPE_DO_GEO_CODE="us"       # optional geo routing
+   export SCRAPE_DO_TIMEOUT="40"        # request timeout seconds
+   ```
+
+### Firecrawl + Scrape.do Random Pool
+When `SCRAPER="firecrawl_scrape_do_random"`, GPT Researcher builds a request pool from your configured keys and randomly routes each scrape request across pool slots.
+
+- Each key is one slot in the random pool
+- Example: 2 Firecrawl keys + 1 Scrape.do key => 3 randomized slots
+- If one slot fails or returns empty content, it tries the next slot
+
+Setup:
+```bash
+export SCRAPER="firecrawl_scrape_do_random"
+export FIRECRAWL_API_KEY="<firecrawl-key-1>,<firecrawl-key-2>"
+export SCRAPE_DO_API_KEY="<your-scrape-do-api-key>"
+```
 
 ## Additional Setup for Selenium
 

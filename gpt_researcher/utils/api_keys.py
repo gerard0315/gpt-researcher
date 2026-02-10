@@ -32,12 +32,12 @@ def collect_api_keys(
 
     primary_key = os.getenv(primary_env_var, "").strip()
     if primary_key:
-        candidates.append(primary_key)
+        candidates.extend(_split_key_list(primary_key))
 
     if fallback_env_var:
         fallback_key = os.getenv(fallback_env_var, "").strip()
         if fallback_key:
-            candidates.append(fallback_key)
+            candidates.extend(_split_key_list(fallback_key))
 
     if list_env_var:
         list_value = os.getenv(list_env_var, "").strip()

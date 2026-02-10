@@ -43,4 +43,10 @@ DEFAULT_CONFIG: BaseConfig = {
     "MCP_ALLOWED_ROOT_PATHS": [],  # List of allowed root paths for local file access
     "MCP_STRATEGY": "fast",  # MCP execution strategy: "fast", "deep", "disabled"
     "REASONING_EFFORT": "medium",
+    # Dual-lane query planner
+    "DUAL_LANE_QUERY_PLANNER": False,
+    "QUERY_LANE_BUDGET": {"subject": 40, "concept": 40, "intersection": 20},
+    "MIN_CONCEPT_QUERIES": 1,
+    "MIN_INTERSECTION_QUERIES": 0,
+    "USE_LLM_RECOMMENDED_LANE_BUDGET": False,
 }

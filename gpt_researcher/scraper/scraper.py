@@ -19,6 +19,8 @@ from . import (
     NoDriverScraper,
     TavilyExtract,
     FireCrawl,
+    ScrapeDoScraper,
+    FirecrawlScrapeDoRandom,
 )
 
 
@@ -291,6 +293,8 @@ class Scraper:
             "nodriver": NoDriverScraper,
             "tavily_extract": TavilyExtract,
             "firecrawl": FireCrawl,
+            "scrape_do": ScrapeDoScraper,
+            "firecrawl_scrape_do_random": FirecrawlScrapeDoRandom,
         }
 
         scraper_key = None

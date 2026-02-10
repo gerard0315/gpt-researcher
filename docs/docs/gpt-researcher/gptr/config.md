@@ -72,7 +72,7 @@ Below is a list of current supported options:
 - **`MAX_ITERATIONS`**: Maximum number of iterations for processes like query expansion or search refinement. Defaults to `3`.
 - **`AGENT_ROLE`**: Role of the agent. This configures the behavior of specialized research agents. Defaults to `None`. When set, it activates role-specific prompting and techniques tailored to particular research domains.
 - **`MAX_SUBTOPICS`**: Maximum number of subtopics to generate or consider. Defaults to `3`.
-- **`SCRAPER`**: Web scraper to use for gathering information. Defaults to `bs` (BeautifulSoup). You can also use [newspaper](https://github.com/codelucas/newspaper).
+- **`SCRAPER`**: Web scraper to use for gathering information. Defaults to `bs` (BeautifulSoup). Supported values include `bs`, `browser`, `nodriver`, `web_base_loader`, `tavily_extract`, `firecrawl`, `scrape_do`, and `firecrawl_scrape_do_random`.
 - **`MAX_SCRAPER_WORKERS`**: Maximum number of concurrent scraper workers per research. Defaults to `15`.
 - **`REPORT_SOURCE`**: Source for the research report data. Defaults to `web` for online research. Can be set to `doc` for local document-based research. This determines where GPT Researcher gathers its primary information from.
 - **`DOC_PATH`**: Path to read and research local documents. Defaults to `./my-docs`.
@@ -105,4 +105,3 @@ export REPORT_FORMAT=IEEE
 ```
 Please note that you might need to export additional env vars and obtain API keys for other supported search retrievers and LLM providers. Please follow your console logs for further assistance.
 To learn more about additional LLM support you can check out the docs [here](/docs/gpt-researcher/llms/llms).
-

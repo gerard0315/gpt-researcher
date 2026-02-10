@@ -2,12 +2,15 @@ import asyncio
 import random
 import logging
 import os
+import re
+from urllib.parse import urlparse
 from typing import Any
 from ..actions.utils import stream_output
 from ..actions.query_processing import (
     plan_research_outline,
     get_search_results,
     get_working_query_for_planning,
+    extract_query_anchors,
 )
 from ..document import DocumentLoader, OnlineDocumentLoader, LangChainDocumentLoader
 from ..utils.enum import ReportSource, ReportType
@@ -31,6 +34,7 @@ class ResearchConductor:
         self.detailed_logging = self._env_flag("DETAILED_RESEARCH_LOGGING", True)
         self.max_trace_results = self._env_int("DETAILED_RESEARCH_LOG_MAX_RESULTS", 5, minimum=1)
         self.max_trace_chars = self._env_int("DETAILED_RESEARCH_LOG_MAX_CHARS", 320, minimum=80)
+        self._query_anchors = extract_query_anchors(self.researcher.query or "")
 
     @staticmethod
     def _env_flag(name: str, default: bool) -> bool:
@@ -91,6 +95,162 @@ class ResearchConductor:
                     "snippet": self._truncate_text(result, self.max_trace_chars),
                 })
         return preview_items
+
+    @staticmethod
+    def _normalize_host(url: str) -> str:
+        if not url:
+            return ""
+        try:
+            parsed = urlparse(url)
+            host = (parsed.netloc or "").lower().strip(".")
+            if host.startswith("www."):
+                host = host[4:]
+            return host
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _is_same_or_subdomain(host: str, domain: str) -> bool:
+        if not host or not domain:
+            return False
+        host = host.lower().strip(".")
+        domain = domain.lower().strip(".")
+        return host == domain or host.endswith(f".{domain}")
+
+    @staticmethod
+    def _alias_tokens(alias: str) -> list[str]:
+        if not alias:
+            return []
+        return [token for token in re.findall(r"[a-z0-9]+", alias.lower()) if len(token) >= 3]
+
+    def _score_result_subject_relevance(
+        self,
+        query: str,
+        result: dict[str, Any],
+        anchors: dict[str, list[str]],
+    ) -> tuple[int, list[str]]:
+        href = str(result.get("href") or result.get("url") or "")
+        title = str(result.get("title") or result.get("name") or "")
+        body = str(result.get("body") or result.get("content") or result.get("snippet") or "")
+        host = self._normalize_host(href)
+        haystack = f"{href}\n{title}\n{body}".lower()
+        query_lower = (query or "").lower()
+
+        score = 0
+        reasons: list[str] = []
+        anchor_domains = anchors.get("domains", [])
+        anchor_aliases = anchors.get("aliases", [])
+
+        if host and any(self._is_same_or_subdomain(host, domain) for domain in anchor_domains):
+            score += 8
+            reasons.append("canonical_domain_match")
+
+        if anchor_domains:
+            for domain in anchor_domains:
+                root = domain.split(".")[0]
+                if len(root) >= 4 and root in haystack:
+                    score += 2
+                    reasons.append("domain_token_match")
+                    break
+
+        alias_exact = False
+        for alias in anchor_aliases:
+            alias_lower = alias.lower().strip()
+            if alias_lower and alias_lower in haystack:
+                score += 4
+                reasons.append("alias_exact_match")
+                alias_exact = True
+                break
+
+        if not alias_exact:
+            for alias in anchor_aliases:
+                tokens = self._alias_tokens(alias)
+                if len(tokens) >= 2 and all(token in haystack for token in tokens):
+                    score += 3
+                    reasons.append("alias_token_match")
+                    break
+
+        # Apply domain strictness only for positive site constraints (exclude "-site:...").
+        site_domains = re.findall(r"(?<!-)site:([a-z0-9.-]+\.[a-z]{2,})", query_lower)
+        if site_domains and host and not any(self._is_same_or_subdomain(host, domain) for domain in site_domains):
+            score -= 4
+            reasons.append("site_filter_mismatch")
+
+        return score, reasons
+
+    def _filter_results_for_primary_subject(
+        self,
+        query: str,
+        search_results: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        anchors = self._query_anchors
+        has_anchors = bool(anchors.get("domains") or anchors.get("aliases"))
+        if not has_anchors:
+            return search_results, {
+                "anchors_present": False,
+                "original_count": len(search_results),
+                "kept_count": len(search_results),
+                "dropped_count": 0,
+                "fallback": "no_anchors",
+                "kept_urls": [
+                    str(item.get("href") or item.get("url") or "")
+                    for item in self._ensure_list(search_results)[:self.max_trace_results]
+                ],
+            }
+
+        scored_results: list[tuple[int, list[str], dict[str, Any]]] = []
+        for result in self._ensure_list(search_results):
+            if not isinstance(result, dict):
+                continue
+            score, reasons = self._score_result_subject_relevance(query, result, anchors)
+            scored_results.append((score, reasons, result))
+
+        kept = [result for score, _, result in scored_results if score >= 3]
+        fallback_used = "none"
+
+        if not kept:
+            positive = sorted(
+                [entry for entry in scored_results if entry[0] > 0],
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            if positive:
+                kept = [result for _, _, result in positive[:3]]
+                fallback_used = "positive_score_fallback"
+            else:
+                kept = []
+                fallback_used = "drop_all_no_anchor_match"
+
+        kept_urls = [
+            str(item.get("href") or item.get("url") or "")
+            for item in kept[:self.max_trace_results]
+        ]
+        dropped_urls = [
+            str(result.get("href") or result.get("url") or "")
+            for score, _, result in scored_results
+            if result not in kept
+        ]
+        top_scored = sorted(scored_results, key=lambda item: item[0], reverse=True)[:self.max_trace_results]
+
+        return kept, {
+            "anchors_present": True,
+            "anchor_domains": anchors.get("domains", [])[:3],
+            "anchor_aliases": anchors.get("aliases", [])[:3],
+            "original_count": len(scored_results),
+            "kept_count": len(kept),
+            "dropped_count": max(0, len(scored_results) - len(kept)),
+            "fallback": fallback_used,
+            "kept_urls": kept_urls,
+            "dropped_urls": dropped_urls[:self.max_trace_results],
+            "top_scored": [
+                {
+                    "score": score,
+                    "url": str(result.get("href") or result.get("url") or ""),
+                    "reasons": reasons,
+                }
+                for score, reasons, result in top_scored
+            ],
+        }
 
     async def _emit_detailed_log(self, content: str, output: str, metadata: dict | None = None):
         if not self.detailed_logging:
@@ -922,8 +1082,29 @@ class ResearchConductor:
                     },
                 )
 
+                filtered_results, filter_metadata = self._filter_results_for_primary_subject(
+                    query,
+                    search_results,
+                )
+                await self._emit_detailed_log(
+                    "retriever_entity_filter_trace",
+                    (
+                        f"{retriever_class.__name__} kept {filter_metadata['kept_count']}/"
+                        f"{filter_metadata['original_count']} subject-aligned results for '{query}'."
+                    ),
+                    {
+                        "query": query,
+                        "retriever": retriever_class.__name__,
+                        **filter_metadata,
+                    },
+                )
+
                 # Collect new URLs from search results
-                search_urls = [url.get("href") for url in search_results if url.get("href")]
+                search_urls = [
+                    url.get("href") or url.get("url")
+                    for url in filtered_results
+                    if (url.get("href") or url.get("url"))
+                ]
                 new_search_urls.extend(search_urls)
             except Exception as e:
                 self.logger.error(f"Error searching with {retriever_class.__name__}: {e}")

@@ -42,3 +42,8 @@ class BaseConfig(TypedDict):
     MCP_ALLOWED_ROOT_PATHS: List[str]
     MCP_STRATEGY: str
     REASONING_EFFORT: str
+    DUAL_LANE_QUERY_PLANNER: bool
+    QUERY_LANE_BUDGET: Dict[str, int]
+    MIN_CONCEPT_QUERIES: int
+    MIN_INTERSECTION_QUERIES: int
+    USE_LLM_RECOMMENDED_LANE_BUDGET: bool

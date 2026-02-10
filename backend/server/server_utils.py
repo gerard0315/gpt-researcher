@@ -50,6 +50,53 @@ class CustomLogsHandler:
         }
         self._persist_snapshots()
 
+    @staticmethod
+    def _parse_total_cost(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            normalized = value.strip().replace("$", "").replace(",", "")
+            try:
+                return float(normalized)
+            except ValueError:
+                return None
+        return None
+
+    def _apply_content_update(self, data: Dict[str, Any]) -> None:
+        payload_type = data.get("type")
+
+        if payload_type == "report":
+            report_chunk = data.get("output")
+            if isinstance(report_chunk, str) and report_chunk:
+                existing_report = self._log_data["content"].get("report", "")
+                self._log_data["content"]["report"] = f"{existing_report}{report_chunk}"
+            return
+
+        if payload_type == "cost":
+            cost_payload = data.get("data", {}) if isinstance(data.get("data"), dict) else {}
+            parsed = (
+                self._parse_total_cost(cost_payload.get("total_cost"))
+                or self._parse_total_cost(cost_payload.get("cost"))
+                or self._parse_total_cost(data.get("output"))
+            )
+            if parsed is not None:
+                self._log_data["content"]["costs"] = parsed
+            return
+
+        for key in ("query", "sources", "context", "report", "costs"):
+            if key in data:
+                value = data[key]
+                if key == "report" and isinstance(value, str):
+                    self._log_data["content"]["report"] = value
+                elif key == "costs":
+                    parsed_cost = self._parse_total_cost(value)
+                    if parsed_cost is not None:
+                        self._log_data["content"]["costs"] = parsed_cost
+                else:
+                    self._log_data["content"][key] = value
+
     def _persist_snapshots(self) -> None:
         for file_path in (self.log_file, self.events_file):
             with open(file_path, "w") as f:
@@ -85,7 +132,7 @@ class CustomLogsHandler:
                 })
             else:
                 # Update content section for other types of data
-                self._log_data["content"].update(data)
+                self._apply_content_update(data)
                 self._append_jsonl_event({
                     "timestamp": event_timestamp,
                     "event_type": "content_update",

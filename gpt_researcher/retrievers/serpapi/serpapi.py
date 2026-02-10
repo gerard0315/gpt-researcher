@@ -1,9 +1,26 @@
 # SerpApi Retriever
 
 # libraries
+import itertools
 import os
 import requests
 import urllib.parse
+
+# Module-level state for round-robin key rotation
+_serpapi_state: dict = {"cycle": None}
+
+
+def _next_key() -> str:
+    if _serpapi_state["cycle"] is None:
+        raw = os.environ.get("SERPAPI_API_KEY", "")
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+        if not keys:
+            raise Exception(
+                "SerpApi API key not found. Please set the SERPAPI_API_KEY environment variable. "
+                "You can get a key at https://serpapi.com/"
+            )
+        _serpapi_state["cycle"] = itertools.cycle(keys)
+    return next(_serpapi_state["cycle"])
 
 
 class SerpApiSearch():
@@ -22,16 +39,10 @@ class SerpApiSearch():
 
     def get_api_key(self):
         """
-        Gets the SerpApi API key
-        Returns:
-
+        Gets the next SerpApi API key from the rotation pool.
+        SERPAPI_API_KEY may be a single key or a comma-separated list of keys.
         """
-        try:
-            api_key = os.environ["SERPAPI_API_KEY"]
-        except:
-            raise Exception("SerpApi API key not found. Please set the SERPAPI_API_KEY environment variable. "
-                            "You can get a key at https://serpapi.com/")
-        return api_key
+        return _next_key()
 
     def search(self, max_results=7):
         """

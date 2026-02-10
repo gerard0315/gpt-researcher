@@ -1,12 +1,13 @@
 import json_repair
 import re
+from enum import Enum
 from urllib.parse import urlparse
 import os
 
 from gpt_researcher.llm_provider.generic.base import ReasoningEfforts
 from ..utils.llm import create_chat_completion
 from ..prompts import PromptFamily
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional, TypedDict
 from ..config import Config
 import logging
 
@@ -22,6 +23,26 @@ _COMPANY_LABEL_PATTERNS = [
     r"项目名\s*[:：]\s*([^\n\r;；。]+)",
 ]
 _TRANSLATED_QUERY_CACHE: dict[str, str] = {}
+_STAGE_A_CACHE: dict[tuple, "SubjectConceptAnalysis"] = {}
+
+
+class QueryLane(str, Enum):
+    subject = "subject"
+    concept = "concept"
+    intersection = "intersection"
+
+
+class PlannedQuery(TypedDict):
+    query: str
+    lane: str
+    rationale: Optional[str]
+
+
+class SubjectConceptAnalysis(TypedDict):
+    intention: str
+    subject_summary: str
+    concept_terms: Dict[str, List[str]]
+    recommended_lane_budget: Dict[str, int]
 
 
 def contains_cjk(text: str) -> bool:
@@ -293,6 +314,360 @@ def _normalize_sub_queries(sub_queries: Any, fallback_query: str) -> List[str]:
     logger.warning("No valid string sub-queries found in model output. Using original query only.")
     return [fallback_query]
 
+def _extract_query_str(item: Any) -> str:
+    """Extract a clean query string from a string or dict item."""
+    if isinstance(item, str):
+        return re.sub(r"\s+", " ", item).strip()
+    if isinstance(item, dict):
+        for key in ("query", "search_query", "text", "q"):
+            if isinstance(item.get(key), str):
+                return re.sub(r"\s+", " ", item[key]).strip()
+    return ""
+
+
+def _heuristic_concept_analysis(query: str) -> SubjectConceptAnalysis:
+    """Fallback Stage A when the LLM call fails: extract concept terms via simple regex."""
+    industry_terms = re.findall(
+        r"\b(?:market|industry|regulation|policy|supply\s*chain|technology|platform|saas|b2b|b2c)\b",
+        query, re.IGNORECASE,
+    )
+    return SubjectConceptAnalysis(
+        intention="general",
+        subject_summary=query[:200],
+        concept_terms={"industry": list(dict.fromkeys(t.lower() for t in industry_terms))},
+        recommended_lane_budget={},
+    )
+
+
+def _allocate_lane_slots(
+    budget: Dict[str, int],
+    max_iterations: int,
+    min_concept: int,
+    min_intersection: int,
+) -> Dict[str, int]:
+    """Deterministic lane slot allocation: floor + highest-fractional-remainder, then apply mins."""
+    lanes = ["subject", "concept", "intersection"]
+    total_budget = sum(budget.get(lane, 0) for lane in lanes) or 100
+
+    raw = {lane: budget.get(lane, 0) * max_iterations / total_budget for lane in lanes}
+    floors: Dict[str, int] = {lane: int(raw[lane]) for lane in lanes}
+    remainders = {lane: raw[lane] - floors[lane] for lane in lanes}
+
+    # Distribute remaining slots by highest fractional remainder
+    remaining_slots = max_iterations - sum(floors.values())
+    for lane in sorted(lanes, key=lambda l: remainders[l], reverse=True)[:remaining_slots]:
+        floors[lane] += 1
+
+    # Apply concept minimum; absorb from subject first, then intersection
+    if floors["concept"] < min_concept:
+        shortage = min_concept - floors["concept"]
+        floors["concept"] = min_concept
+        for donor in sorted(["subject", "intersection"], key=lambda l: floors[l], reverse=True):
+            take = min(shortage, max(0, floors[donor] - 1))
+            floors[donor] -= take
+            shortage -= take
+            if shortage <= 0:
+                break
+
+    # Apply intersection minimum; absorb from concept first, then subject
+    if floors["intersection"] < min_intersection:
+        shortage = min_intersection - floors["intersection"]
+        floors["intersection"] = min_intersection
+        for donor in sorted(["concept", "subject"], key=lambda l: floors[l], reverse=True):
+            take = min(shortage, max(0, floors[donor] - 1))
+            floors[donor] -= take
+            shortage -= take
+            if shortage <= 0:
+                break
+
+    return floors
+
+
+async def analyze_subject_and_concepts(
+    query: str,
+    parent_query: str,
+    report_type: str,
+    cfg: Config,
+    cost_callback: callable = None,
+    prompt_family: type[PromptFamily] | PromptFamily = PromptFamily,
+    **kwargs,
+) -> SubjectConceptAnalysis:
+    """Stage A: call the LLM to analyse the subject entity and its concept space."""
+    cache_key = (query, parent_query or "", report_type)
+    if cache_key in _STAGE_A_CACHE:
+        return _STAGE_A_CACHE[cache_key]
+
+    analysis_prompt = prompt_family.generate_subject_concept_analysis_prompt(
+        query, parent_query, report_type
+    )
+
+    try:
+        response = await create_chat_completion(
+            model=cfg.fast_llm_model,
+            messages=[{"role": "user", "content": analysis_prompt}],
+            llm_provider=cfg.fast_llm_provider,
+            temperature=0,
+            max_tokens=cfg.fast_token_limit,
+            llm_kwargs=cfg.llm_kwargs,
+            reasoning_effort=ReasoningEfforts.Low.value,
+            cost_callback=cost_callback,
+            **kwargs,
+        )
+        parsed = json_repair.loads(_strip_code_fences(response or ""))
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected dict from Stage A, got {type(parsed)}")
+        analysis = SubjectConceptAnalysis(
+            intention=parsed.get("intention", "general"),
+            subject_summary=parsed.get("subject_summary", ""),
+            concept_terms=parsed.get("concept_terms", {}),
+            recommended_lane_budget=parsed.get("recommended_lane_budget", {}),
+        )
+    except Exception as exc:
+        logger.warning(f"Stage A analysis failed ({exc}), using heuristic fallback.")
+        analysis = _heuristic_concept_analysis(query)
+
+    _STAGE_A_CACHE[cache_key] = analysis
+    logger.debug(
+        "Stage A: intention=%s, concept_facets=%s",
+        analysis["intention"],
+        list(analysis["concept_terms"].keys()),
+    )
+    return analysis
+
+
+async def generate_lane_queries(
+    query: str,
+    parent_query: str,
+    report_type: str,
+    analysis: SubjectConceptAnalysis,
+    lane_budget: Dict[str, int],
+    context: List[Dict[str, Any]],
+    cfg: Config,
+    cost_callback: callable = None,
+    prompt_family: type[PromptFamily] | PromptFamily = PromptFamily,
+    **kwargs,
+) -> Dict[str, List[str]]:
+    """Stage B: call the LLM to generate lane-structured queries."""
+    _LANE_ALIASES: Dict[str, str] = {
+        "subject_queries": "subject",
+        "company_queries": "subject",
+        "concept_queries": "concept",
+        "industry_queries": "concept",
+        "intersection_queries": "intersection",
+    }
+    empty: Dict[str, List[str]] = {"subject": [], "concept": [], "intersection": []}
+
+    lane_prompt = prompt_family.generate_lane_search_queries_prompt(
+        query, parent_query, report_type, analysis, lane_budget, context
+    )
+
+    response = None
+    try:
+        response = await create_chat_completion(
+            model=cfg.strategic_llm_model,
+            messages=[{"role": "user", "content": lane_prompt}],
+            llm_provider=cfg.strategic_llm_provider,
+            max_tokens=None,
+            llm_kwargs=cfg.llm_kwargs,
+            reasoning_effort=ReasoningEfforts.Medium.value,
+            cost_callback=cost_callback,
+            **kwargs,
+        )
+    except Exception as exc:
+        logger.warning(f"Stage B failed ({exc}), retrying with token limit.")
+        try:
+            response = await create_chat_completion(
+                model=cfg.strategic_llm_model,
+                messages=[{"role": "user", "content": lane_prompt}],
+                llm_provider=cfg.strategic_llm_provider,
+                max_tokens=cfg.strategic_token_limit,
+                llm_kwargs=cfg.llm_kwargs,
+                cost_callback=cost_callback,
+                **kwargs,
+            )
+        except Exception as exc2:
+            logger.warning(f"Stage B retry also failed ({exc2}). Returning empty lanes.")
+            return empty
+
+    if not response:
+        return empty
+
+    try:
+        parsed = json_repair.loads(_strip_code_fences(response))
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected dict from Stage B, got {type(parsed)}")
+
+        lanes: Dict[str, List[str]] = {"subject": [], "concept": [], "intersection": []}
+        for key, value in parsed.items():
+            lane = _LANE_ALIASES.get(key)
+            if lane and isinstance(value, list):
+                for item in value:
+                    q = _extract_query_str(item)
+                    if q:
+                        lanes[lane].append(q)
+
+        logger.debug(
+            "Stage B raw counts: subject=%d, concept=%d, intersection=%d",
+            len(lanes["subject"]), len(lanes["concept"]), len(lanes["intersection"]),
+        )
+        return lanes
+    except Exception as exc:
+        logger.warning(f"Failed to parse Stage B response ({exc}). Returning empty lanes.")
+        return empty
+
+
+def ground_lane_queries(
+    lane_queries: Dict[str, List[str]],
+    original_query: str,
+) -> Dict[str, List[str]]:
+    """Lane-aware grounding: anchor subject/intersection queries, leave concept free."""
+    anchors = extract_query_anchors(original_query)
+    has_anchors = bool(anchors["domains"] or anchors["aliases"])
+
+    result: Dict[str, List[str]] = {}
+    for lane, queries in lane_queries.items():
+        grounded: List[str] = []
+        for q in queries:
+            if not isinstance(q, str):
+                continue
+            candidate = re.sub(r"\s+", " ", q).strip()
+            if not candidate:
+                continue
+            if lane in ("subject", "intersection") and has_anchors and not _contains_anchor(candidate, anchors):
+                anchor_prefix = _build_anchor_prefix(anchors)
+                candidate = f"{anchor_prefix} {candidate}".strip() if anchor_prefix else candidate
+            # concept lane: no forced anchor
+            grounded.append(candidate)
+        result[lane] = _dedupe_preserve_order(grounded)
+
+    # Ensure subject lane always has an identity query
+    if has_anchors and "subject" in result:
+        primary_domain = anchors["domains"][0] if anchors["domains"] else None
+        has_identity = any(
+            (f"site:{primary_domain}" in q.lower()) if primary_domain else False
+            for q in result["subject"]
+        )
+        if not has_identity:
+            identity_q = _build_identity_verification_query(anchors, original_query)
+            result["subject"].insert(0, identity_q)
+            result["subject"] = _dedupe_preserve_order(result["subject"])
+
+    logger.debug(
+        "After lane grounding: %s",
+        ", ".join(f"{k}={len(v)}" for k, v in result.items()),
+    )
+    return result
+
+
+def _merge_lane_queries(
+    grounded_lanes: Dict[str, List[str]],
+    slots: Dict[str, int],
+) -> List[str]:
+    """Merge lane queries into a flat list respecting slot allocation.
+
+    Overflow reallocation priority: intersection → concept → subject.
+    """
+    merged: List[str] = []
+    # Fill primary slots in subject → concept → intersection order
+    for lane in ("subject", "concept", "intersection"):
+        available = grounded_lanes.get(lane, [])
+        quota = slots.get(lane, 0)
+        merged.extend(available[:quota])
+
+    # Fill any unfilled slots from lane excess in reallocation priority order
+    total_slots = sum(slots.values())
+    if len(merged) < total_slots:
+        for lane in ("concept", "subject", "intersection"):
+            available = grounded_lanes.get(lane, [])
+            quota = slots.get(lane, 0)
+            excess = available[quota:]
+            for q in excess:
+                if q not in merged:
+                    merged.append(q)
+                if len(merged) >= total_slots:
+                    break
+            if len(merged) >= total_slots:
+                break
+
+    return _dedupe_preserve_order(merged)
+
+
+async def _generate_sub_queries_dual_lane(
+    query: str,
+    working_query: str,
+    working_parent_query: str,
+    report_type: str,
+    context: List[Dict[str, Any]],
+    cfg: Config,
+    max_iterations: int,
+    cost_callback: callable = None,
+    prompt_family: type[PromptFamily] | PromptFamily = PromptFamily,
+    **kwargs,
+) -> List[str]:
+    """Dual-lane planning path: Stage A analysis + Stage B lane generation + merge."""
+    analysis = await analyze_subject_and_concepts(
+        query=working_query,
+        parent_query=working_parent_query,
+        report_type=report_type,
+        cfg=cfg,
+        cost_callback=cost_callback,
+        prompt_family=prompt_family,
+        **kwargs,
+    )
+
+    # Resolve lane budget
+    use_llm_budget = getattr(cfg, "use_llm_recommended_lane_budget", False)
+    config_budget: Dict[str, int] = getattr(
+        cfg, "query_lane_budget", {"subject": 40, "concept": 40, "intersection": 20}
+    )
+    if use_llm_budget and analysis.get("recommended_lane_budget"):
+        raw_budget = analysis["recommended_lane_budget"]
+        total = sum(raw_budget.values()) or 1
+        budget = {k: int(v * 100 / total) for k, v in raw_budget.items()}
+    else:
+        budget = config_budget
+
+    min_concept = getattr(cfg, "min_concept_queries", 1) if max_iterations >= 2 else 0
+    min_intersection = getattr(cfg, "min_intersection_queries", 0) if max_iterations >= 3 else 0
+
+    slots = _allocate_lane_slots(budget, max_iterations, min_concept, min_intersection)
+    logger.debug("Lane slots allocated: %s", slots)
+
+    lane_queries = await generate_lane_queries(
+        query=working_query,
+        parent_query=working_parent_query,
+        report_type=report_type,
+        analysis=analysis,
+        lane_budget=slots,
+        context=context,
+        cfg=cfg,
+        cost_callback=cost_callback,
+        prompt_family=prompt_family,
+        **kwargs,
+    )
+
+    # Fall back to legacy path if Stage B returned nothing
+    if not any(lane_queries.values()):
+        logger.warning("Stage B returned no queries. Falling back to legacy planner.")
+        return ground_generated_queries([working_query], query, max_queries=max_iterations)
+
+    grounded_lanes = ground_lane_queries(lane_queries, query)
+    merged = _merge_lane_queries(grounded_lanes, slots)
+
+    logger.debug(
+        "Final lane allocation: subject=%d, concept=%d, intersection=%d, total=%d",
+        len([q for q in merged if _contains_anchor(q, extract_query_anchors(query))]),
+        slots.get("concept", 0),
+        slots.get("intersection", 0),
+        len(merged),
+    )
+
+    if not merged:
+        return ground_generated_queries([working_query], query, max_queries=max_iterations)
+
+    return merged[:max_iterations]
+
+
 async def get_search_results(query: str, retriever: Any, query_domains: List[str] = None, researcher=None) -> List[Dict[str, Any]]:
     """
     Get web search results for a given query.
@@ -344,6 +719,8 @@ async def generate_sub_queries(
     Returns:
         A list of sub-queries
     """
+    max_iterations = cfg.max_iterations or 3
+
     working_query = await get_working_query_for_planning(
         query=query,
         cfg=cfg,
@@ -361,11 +738,25 @@ async def generate_sub_queries(
         else parent_query
     )
 
+    if getattr(cfg, "dual_lane_query_planner", False):
+        return await _generate_sub_queries_dual_lane(
+            query=query,
+            working_query=working_query,
+            working_parent_query=working_parent_query,
+            report_type=report_type,
+            context=context,
+            cfg=cfg,
+            max_iterations=max_iterations,
+            cost_callback=cost_callback,
+            prompt_family=prompt_family,
+            **kwargs,
+        )
+
     gen_queries_prompt = prompt_family.generate_search_queries_prompt(
         working_query,
         working_parent_query,
         report_type,
-        max_iterations=cfg.max_iterations or 3,
+        max_iterations=max_iterations,
         context=context,
     )
 
@@ -413,7 +804,7 @@ async def generate_sub_queries(
         return ground_generated_queries(
             [working_query],
             query,
-            max_queries=cfg.max_iterations or 3,
+            max_queries=max_iterations,
         )
 
     try:
@@ -422,14 +813,14 @@ async def generate_sub_queries(
         return ground_generated_queries(
             normalized,
             query,
-            max_queries=cfg.max_iterations or 3,
+            max_queries=max_iterations,
         )
     except Exception as e:
         logger.warning(f"Failed to parse generated sub-queries: {e}. Using the original query only.")
         return ground_generated_queries(
             [working_query],
             query,
-            max_queries=cfg.max_iterations or 3,
+            max_queries=max_iterations,
         )
 
 async def plan_research_outline(

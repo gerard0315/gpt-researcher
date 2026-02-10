@@ -196,6 +196,108 @@ AVAILABLE TOOLS: {tool_names}
 Please conduct thorough research and provide your findings. Use the tools strategically to gather the most relevant and comprehensive information."""
 
     @staticmethod
+    def generate_subject_concept_analysis_prompt(
+        query: str,
+        parent_query: str,
+        report_type: str,
+    ) -> str:
+        """Stage A: Analyse the subject entity and its surrounding concept space.
+
+        Returns a JSON object with keys:
+          intention, subject_summary, concept_terms, recommended_lane_budget
+        """
+        task = f"{parent_query} - {query}" if parent_query else query
+        return f"""You are a research analyst. Given the research task below, extract structured information to guide query planning.
+
+Research task: "{task}"
+Report type: {report_type}
+
+Respond with a single JSON object (no markdown fences) in exactly this schema:
+{{
+  "intention": "<one of: due_diligence | competitive_analysis | general | technology_research | regulatory_research>",
+  "subject_summary": "<short description of the primary subject entity, max 80 chars>",
+  "concept_terms": {{
+    "industry": ["<term>", ...],
+    "technology": ["<term>", ...],
+    "regulation": ["<term>", ...],
+    "business_model": ["<term>", ...]
+  }},
+  "recommended_lane_budget": {{
+    "subject": <integer 0-100>,
+    "concept": <integer 0-100>,
+    "intersection": <integer 0-100>
+  }}
+}}
+
+Rules:
+- concept_terms arrays may be empty if no relevant terms apply.
+- recommended_lane_budget values must sum to 100.
+- Do not include any text outside the JSON object.
+"""
+
+    @staticmethod
+    def generate_lane_search_queries_prompt(
+        query: str,
+        parent_query: str,
+        report_type: str,
+        analysis: Dict[str, Any],
+        lane_budget: Dict[str, int],
+        context: List[Dict[str, Any]] = [],
+    ) -> str:
+        """Stage B: Generate lane-structured search queries using Stage A analysis.
+
+        Returns a JSON object with subject_queries, concept_queries, intersection_queries arrays.
+        """
+        task = f"{parent_query} - {query}" if parent_query else query
+        entity_disambiguation_prompt = PromptFamily._build_entity_disambiguation_prompt(task)
+
+        subject_count = lane_budget.get("subject", 2)
+        concept_count = lane_budget.get("concept", 2)
+        intersection_count = lane_budget.get("intersection", 1)
+
+        concept_terms = analysis.get("concept_terms", {})
+        concept_terms_str = ", ".join(
+            term
+            for terms in concept_terms.values()
+            for term in terms
+        ) or "relevant industry or technology terms"
+
+        context_str = f"\nContext from prior search: {context}\n" if context else ""
+
+        return f"""You are a research query specialist. Generate structured search queries for the following task.
+
+Research task: "{task}"
+Intention: {analysis.get("intention", "general")}
+Subject: {analysis.get("subject_summary", "")}
+Concept space: {concept_terms_str}
+{context_str}
+{entity_disambiguation_prompt}
+Generate exactly {subject_count} subject queries, {concept_count} concept queries, and {intersection_count} intersection queries.
+
+Lane definitions:
+- subject_queries: Queries about the entity itself (identity, product, funding, team, traction).
+  Constraint: MUST include the entity identifier (name or domain) in every query.
+- concept_queries: Queries about the surrounding industry or technology, NOT about the specific entity.
+  Constraint: Do NOT require the entity name/domain. Focus on market, regulation, technology paradigm,
+  value chain, substitutes, benchmarks, or competitive landscape broadly.
+- intersection_queries: Queries about how the entity fits within the industry/technology context
+  (moat, timing, adoption risk, relative positioning).
+  Constraint: Should include both entity identifier and industry/technology terms.
+
+Hard constraints for all queries:
+- Write in English.
+- Do not invent facts (funding amounts, valuations, legal IDs) not present in the task.
+- Prefer verification-oriented phrasing.
+
+Respond with a single JSON object (no markdown fences):
+{{
+  "subject_queries": ["query 1", "query 2", ...],
+  "concept_queries": ["query 1", "query 2", ...],
+  "intersection_queries": ["query 1", ...]
+}}
+"""
+
+    @staticmethod
     def generate_search_queries_prompt(
         question: str,
         parent_query: str,
