@@ -33,12 +33,15 @@ _SUPPORTED_PROVIDERS = {
     "vllm_openai",
     "aimlapi",
     "netmind",
+    "bltcy",
+    "moonshot",
 }
 
 def _is_moonshot_base_url(base_url: str | None) -> bool:
     if not base_url:
         return False
     return "api.moonshot.cn" in base_url
+
 
 NO_SUPPORT_TEMPERATURE_MODELS = [
     "deepseek/deepseek-reasoner",
@@ -71,6 +74,47 @@ class ReasoningEfforts(Enum):
     High = "high"
     Medium = "medium"
     Low = "low"
+
+
+def _normalize_content_blocks(content: Any) -> str:
+    """
+    Normalize provider content payloads into plain text.
+
+    Some providers return structured lists that include non-text blocks (for
+    example reasoning metadata). We only extract message text fields.
+    """
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            text = _normalize_content_blocks(item)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+
+    if isinstance(content, dict):
+        for key in ("text", "output_text", "content", "value"):
+            if key in content:
+                text = _normalize_content_blocks(content.get(key))
+                if text:
+                    return text
+        # Ignore dicts without explicit text fields (e.g. reasoning metadata).
+        return ""
+
+    text_attr = getattr(content, "text", None)
+    if text_attr is not None:
+        return _normalize_content_blocks(text_attr)
+
+    content_attr = getattr(content, "content", None)
+    if content_attr is not None:
+        return _normalize_content_blocks(content_attr)
+
+    return str(content)
 
 
 class ChatLogger:
@@ -112,6 +156,10 @@ class GenericLLMProvider:
                 if _is_moonshot_base_url(base_url) and os.environ.get("KIMI_API_KEY"):
                     # Use Kimi key when targeting Moonshot.
                     kwargs["openai_api_key"] = os.environ["KIMI_API_KEY"]
+                elif os.environ.get("OPENAI_API_KEY"):
+                    # Use OpenAI key from environment
+                    kwargs["openai_api_key"] = os.environ["OPENAI_API_KEY"]
+                # If still no key, ChatOpenAI will raise an appropriate error
 
             llm = ChatOpenAI(**kwargs)
         elif provider == "anthropic":
@@ -257,6 +305,26 @@ class GenericLLMProvider:
             from langchain_netmind import ChatNetmind
 
             llm = ChatNetmind(**kwargs)
+        elif provider == "bltcy":
+            _check_pkg("langchain_openai")
+            from langchain_openai import ChatOpenAI
+
+            llm = ChatOpenAI(
+                openai_api_base=os.environ["OPENAI_BLT_URL"],
+                openai_api_key=os.environ["OPENAI_KEY_BLTCY"],
+                request_timeout=300,
+                max_retries=5,
+                **kwargs
+            )
+        elif provider == "moonshot":
+            _check_pkg("langchain_openai")
+            from langchain_openai import ChatOpenAI
+
+            llm = ChatOpenAI(
+                openai_api_base="https://api.moonshot.cn/v1",
+                openai_api_key=os.environ["KIMI_API_KEY"],
+                **kwargs
+            )
         else:
             supported = ", ".join(_SUPPORTED_PROVIDERS)
             raise ValueError(
@@ -275,6 +343,10 @@ class GenericLLMProvider:
         else:
             res = await self.stream_response(messages, websocket, **kwargs)
 
+        # Some providers return structured content blocks instead of plain text.
+        if not isinstance(res, str):
+            res = _normalize_content_blocks(res)
+
         if self.chat_logger:
             await self.chat_logger.log_request(messages, res)
 
@@ -288,6 +360,12 @@ class GenericLLMProvider:
         async for chunk in self.llm.astream(messages, **kwargs):
             content = chunk.content
             if content is not None:
+                if not isinstance(content, str):
+                    content = _normalize_content_blocks(content)
+
+                if not content:
+                    continue
+
                 response += content
                 paragraph += content
                 if "\n" in paragraph:

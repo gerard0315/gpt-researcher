@@ -269,7 +269,15 @@ async def generate_report(
             cost_callback=cost_callback,
             **kwargs
         )
-    except:
+    except Exception as e:
+        # Parse retry-after delay from rate limit errors, default to 30s
+        retry_delay = 30
+        import re
+        match = re.search(r'try again after ([\d.]+) seconds', str(e))
+        if match:
+            retry_delay = float(match.group(1)) + 1  # add 1s buffer
+        logger.warning(f"First attempt to generate report failed: {e}. Waiting {retry_delay}s before retrying...")
+        await asyncio.sleep(retry_delay)
         try:
             report = await create_chat_completion(
                 model=cfg.smart_llm_model,
@@ -285,7 +293,7 @@ async def generate_report(
                 cost_callback=cost_callback,
                 **kwargs
             )
-        except Exception as e:
-            print(f"Error in generate_report: {e}")
+        except Exception as e2:
+            logger.error(f"Error in generate_report (retry also failed): {e2}")
 
     return report

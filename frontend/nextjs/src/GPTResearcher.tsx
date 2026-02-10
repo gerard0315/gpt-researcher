@@ -31,7 +31,11 @@ export const GPTResearcher = ({
   theme = {}
 }: GPTResearcherProps) => {
 
-  localStorage.setItem('apiURL', apiUrl);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('apiURL', apiUrl);
+    }
+  }, [apiUrl]);
 
   const [promptValue, setPromptValue] = useState(defaultPrompt);
   const [showResult, setShowResult] = useState(false);
@@ -39,14 +43,15 @@ export const GPTResearcher = ({
   const [loading, setLoading] = useState(false);
   const [chatBoxSettings, setChatBoxSettings] = useState<ChatBoxSettings>({
     report_source: 'web',
-    report_type: 'research_report',
+    report_type: 'deep',
     tone: 'Objective',
     domains: [],
-    defaultReportType: 'research_report',
+    defaultReportType: 'deep',
     layoutType: 'default',
     mcp_enabled: false,
     mcp_configs: [],
     mcp_strategy: 'fast',
+    api_provider: 'bltcy',
   });
   const [question, setQuestion] = useState("");
   const [orderedData, setOrderedData] = useState<Data[]>([]);

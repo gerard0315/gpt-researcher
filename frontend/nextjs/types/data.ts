@@ -48,6 +48,7 @@ export interface ChatBoxSettings {
   mcp_enabled: boolean;
   mcp_configs: MCPConfig[];
   mcp_strategy?: string;
+  api_provider?: 'official' | 'bltcy';
 }
 
 export interface Domain {

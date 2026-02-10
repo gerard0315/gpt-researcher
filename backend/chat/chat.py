@@ -1,5 +1,4 @@
 import logging
-import os
 import uuid
 import json
 from fastapi import WebSocket
@@ -11,6 +10,7 @@ from gpt_researcher.memory import Memory
 from gpt_researcher.config.config import Config
 from gpt_researcher.utils.llm import create_chat_completion
 from gpt_researcher.utils.tools import create_chat_completion_with_tools, create_search_tool
+from gpt_researcher.utils.api_keys import collect_api_keys, is_probable_quota_or_auth_error
 from tavily import TavilyClient
 from datetime import datetime
 
@@ -66,9 +66,12 @@ class ChatAgentWithMemory:
         self.vector_store = vector_store
         self.retriever = None
         self.search_metadata = None
-        
-        # Initialize Tavily client
-        self.tavily_client = TavilyClient(api_key=os.environ.get("TAVILY_API_KEY"))
+        self.tavily_api_keys = collect_api_keys(
+            primary_env_var="TAVILY_API_KEY",
+            fallback_env_var="TAVILY_API_KEY_FALLBACK",
+            list_env_var="TAVILY_API_KEYS",
+        )
+        self.tavily_client = TavilyClient(api_key=self.tavily_api_keys[0]) if self.tavily_api_keys else None
         
         # Process document and create vector store if not provided
         if not self.vector_store and False:
@@ -108,28 +111,41 @@ class ChatAgentWithMemory:
 
     def quick_search(self, query):
         """Perform a web search for current information using Tavily"""
-        try:
-            logger.info(f"Performing web search for: {query}")
-            results = self.tavily_client.search(query=query, max_results=5)
-            
-            # Store search metadata for frontend
-            self.search_metadata = {
-                "query": query,
-                "sources": [
-                    {"title": result.get("title", ""), 
-                     "url": result.get("url", ""),
-                     "content": result.get("content", "")[:200] + "..." if len(result.get("content", "")) > 200 else result.get("content", "")}
-                    for result in results.get("results", [])
-                ]
-            }
-            
-            return results
-        except Exception as e:
-            logger.error(f"Error performing web search: {str(e)}", exc_info=True)
-            return {
-                "error": str(e),
-                "results": []
-            }
+        if not self.tavily_api_keys:
+            return {"error": "Tavily API key is not configured", "results": []}
+
+        last_error = None
+        for index, api_key in enumerate(self.tavily_api_keys):
+            try:
+                logger.info(f"Performing web search for: {query}")
+                client = self.tavily_client if index == 0 and self.tavily_client else TavilyClient(api_key=api_key)
+                results = client.search(query=query, max_results=5)
+
+                # Store search metadata for frontend
+                self.search_metadata = {
+                    "query": query,
+                    "sources": [
+                        {"title": result.get("title", ""),
+                         "url": result.get("url", ""),
+                         "content": result.get("content", "")[:200] + "..." if len(result.get("content", "")) > 200 else result.get("content", "")}
+                        for result in results.get("results", [])
+                    ]
+                }
+
+                return results
+            except Exception as e:
+                last_error = e
+                can_retry_with_next_key = (
+                    index < len(self.tavily_api_keys) - 1 and
+                    is_probable_quota_or_auth_error(str(e))
+                )
+                if can_retry_with_next_key:
+                    logger.warning("Tavily key appears exhausted/unauthorized. Trying fallback key...")
+                    continue
+                logger.error(f"Error performing web search: {str(e)}", exc_info=True)
+                break
+
+        return {"error": str(last_error), "results": []}
 
 
     async def process_chat_completion(self, messages: List[Dict[str, str]]):

@@ -55,9 +55,21 @@ async def choose_agent(
 
 
 async def handle_json_error(response):
+    default_agent = (
+        "Default Agent",
+        "You are an AI critical thinker research assistant. Your sole purpose is to write well written, "
+        "critically acclaimed, objective and structured reports on given text."
+    )
+
+    # Nothing to parse
+    if not response:
+        logger.info("No LLM response to parse; falling back to default agent.")
+        return default_agent
+
     try:
-        agent_dict = json_repair.loads(response)
-        if agent_dict.get("server") and agent_dict.get("agent_role_prompt"):
+        parsed_data = json_repair.loads(response)
+        agent_dict = _extract_agent_dict(parsed_data)
+        if agent_dict:
             return agent_dict["server"], agent_dict["agent_role_prompt"]
     except Exception as e:
         error_type = type(e).__name__
@@ -73,7 +85,9 @@ async def handle_json_error(response):
     if json_string:
         try:
             json_data = json.loads(json_string)
-            return json_data["server"], json_data["agent_role_prompt"]
+            agent_dict = _extract_agent_dict(json_data)
+            if agent_dict:
+                return agent_dict["server"], agent_dict["agent_role_prompt"]
         except json.JSONDecodeError as e:
             logger.warning(
                 f"Failed to decode JSON from regex extraction: {str(e)}",
@@ -81,14 +95,29 @@ async def handle_json_error(response):
             )
 
     logger.info("No valid JSON found in LLM response. Falling back to default agent.")
-    return "Default Agent", (
-        "You are an AI critical thinker research assistant. Your sole purpose is to write well written, "
-        "critically acclaimed, objective and structured reports on given text."
-    )
+    return default_agent
 
 
 def extract_json_with_regex(response):
+    if response is None:
+        return None
+    if not isinstance(response, str):
+        response = str(response)
     json_match = re.search(r"{.*?}", response, re.DOTALL)
     if json_match:
         return json_match.group(0)
+    return None
+
+
+def _extract_agent_dict(parsed_data):
+    if isinstance(parsed_data, dict):
+        if parsed_data.get("server") and parsed_data.get("agent_role_prompt"):
+            return parsed_data
+        return None
+
+    if isinstance(parsed_data, list):
+        for item in parsed_data:
+            if isinstance(item, dict) and item.get("server") and item.get("agent_role_prompt"):
+                return item
+
     return None

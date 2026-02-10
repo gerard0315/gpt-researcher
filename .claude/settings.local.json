@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/YiranTao/INP/gpt-researcher/.venv/bin/pip install:*)",
+      "Bash(python3:*)",
+      "Bash(find:*)"
+    ]
+  }
+}

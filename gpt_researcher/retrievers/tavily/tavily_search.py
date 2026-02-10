@@ -1,10 +1,10 @@
 # Tavily API Retriever
 
 # libraries
-import os
-from typing import Literal, Sequence, Optional
+from typing import Literal, Sequence
 import requests
 import json
+from ...utils.api_keys import collect_api_keys, is_probable_quota_or_auth_error, mask_api_key
 
 
 class TavilySearch:
@@ -26,28 +26,31 @@ class TavilySearch:
         self.headers = headers or {}
         self.topic = topic
         self.base_url = "https://api.tavily.com/search"
-        self.api_key = self.get_api_key()
+        self.api_keys = self.get_api_keys()
+        self.api_key = self.api_keys[0] if self.api_keys else ""
         self.headers = {
             "Content-Type": "application/json",
         }
         self.query_domains = query_domains or None
 
-    def get_api_key(self):
+    def get_api_keys(self):
         """
-        Gets the Tavily API key
+        Gets Tavily API keys (primary + optional fallback/list keys).
         Returns:
 
         """
-        api_key = self.headers.get("tavily_api_key")
-        if not api_key:
-            try:
-                api_key = os.environ["TAVILY_API_KEY"]
-            except KeyError:
-                print(
-                    "Tavily API key not found, set to blank. If you need a retriver, please set the TAVILY_API_KEY environment variable."
-                )
-                return ""
-        return api_key
+        header_key = self.headers.get("tavily_api_key", "").strip()
+        api_keys = collect_api_keys(
+            primary_env_var="TAVILY_API_KEY",
+            fallback_env_var="TAVILY_API_KEY_FALLBACK",
+            list_env_var="TAVILY_API_KEYS",
+            explicit_keys=[header_key] if header_key else None,
+        )
+        if not api_keys:
+            print(
+                "Tavily API key not found, set to blank. If you need a retriver, please set the TAVILY_API_KEY environment variable."
+            )
+        return api_keys
 
 
     def _search(
@@ -63,6 +66,7 @@ class TavilySearch:
         include_raw_content: bool = False,
         include_images: bool = False,
         use_cache: bool = True,
+        api_key: str = "",
     ) -> dict:
         """
         Internal search method to send the request to the API.
@@ -79,7 +83,7 @@ class TavilySearch:
             "include_domains": include_domains,
             "exclude_domains": exclude_domains,
             "include_images": include_images,
-            "api_key": self.api_key,
+            "api_key": api_key or self.api_key,
             "use_cache": use_cache,
         }
 
@@ -99,23 +103,52 @@ class TavilySearch:
         Returns:
 
         """
-        try:
-            # Search the query
-            results = self._search(
-                self.query,
-                search_depth="basic",
-                max_results=max_results,
-                topic=self.topic,
-                include_domains=self.query_domains,
-            )
-            sources = results.get("results", [])
-            if not sources:
-                raise Exception("No results found with Tavily API search.")
-            # Return the results
-            search_response = [
-                {"href": obj["url"], "body": obj["content"]} for obj in sources
-            ]
-        except Exception as e:
-            print(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
-            search_response = []
-        return search_response
+        if not self.api_keys:
+            return []
+
+        last_error = None
+        for index, api_key in enumerate(self.api_keys):
+            try:
+                results = self._search(
+                    self.query,
+                    search_depth="basic",
+                    max_results=max_results,
+                    topic=self.topic,
+                    include_domains=self.query_domains,
+                    api_key=api_key,
+                )
+                sources = results.get("results", [])
+                if not sources:
+                    raise Exception("No results found with Tavily API search.")
+                return [{"href": obj["url"], "body": obj["content"]} for obj in sources]
+            except requests.HTTPError as e:
+                last_error = e
+                masked = mask_api_key(api_key)
+                status_code = e.response.status_code if e.response is not None else None
+                print(f"Tavily key {masked} failed (HTTP {status_code}): {e}")
+                can_retry_with_next_key = (
+                    index < len(self.api_keys) - 1 and
+                    (
+                        status_code in {401, 403, 429} or
+                        is_probable_quota_or_auth_error(str(e))
+                    )
+                )
+                if can_retry_with_next_key:
+                    print(f"Trying next Tavily key ({index + 2}/{len(self.api_keys)})...")
+                    continue
+                break
+            except Exception as e:
+                last_error = e
+                masked = mask_api_key(api_key)
+                print(f"Tavily key {masked} failed: {e}")
+                can_retry_with_next_key = (
+                    index < len(self.api_keys) - 1 and
+                    is_probable_quota_or_auth_error(str(e))
+                )
+                if can_retry_with_next_key:
+                    print(f"Trying next Tavily key ({index + 2}/{len(self.api_keys)})...")
+                    continue
+                break
+
+        print(f"Error: All {len(self.api_keys)} Tavily key(s) failed. Last error: {last_error}")
+        return []

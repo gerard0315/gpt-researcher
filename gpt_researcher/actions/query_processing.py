@@ -9,6 +9,51 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_sub_queries(sub_queries: Any, fallback_query: str) -> List[str]:
+    """
+    Coerce model output into a clean list of string queries.
+
+    The strategic model can sometimes return mixed structures (e.g. reasoning
+    blocks + actual query arrays). This helper extracts only valid query text.
+    """
+    collected_queries: list[str] = []
+
+    def _collect(item: Any) -> None:
+        if isinstance(item, str):
+            query = item.strip()
+            if query:
+                collected_queries.append(query)
+            return
+
+        if isinstance(item, list):
+            for value in item:
+                _collect(value)
+            return
+
+        if isinstance(item, dict):
+            # Common shapes from model outputs
+            for key in ("query", "search_query", "sub_query", "text"):
+                value = item.get(key)
+                if isinstance(value, str):
+                    query = value.strip()
+                    if query:
+                        collected_queries.append(query)
+
+            for key in ("queries", "sub_queries", "subqueries", "items", "results", "content"):
+                if key in item:
+                    _collect(item.get(key))
+
+    _collect(sub_queries)
+
+    # Keep order, remove duplicates
+    normalized = list(dict.fromkeys(collected_queries))
+    if normalized:
+        return normalized
+
+    logger.warning("No valid string sub-queries found in model output. Using original query only.")
+    return [fallback_query]
+
 async def get_search_results(query: str, retriever: Any, query_domains: List[str] = None, researcher=None) -> List[Dict[str, Any]]:
     """
     Get web search results for a given query.
@@ -107,7 +152,16 @@ async def generate_sub_queries(
                 **kwargs
             )
 
-    return json_repair.loads(response)
+    if not response:
+        logger.warning("LLM returned empty response while generating sub-queries. Using the original query only.")
+        return [query]
+
+    try:
+        parsed_sub_queries = json_repair.loads(response)
+        return _normalize_sub_queries(parsed_sub_queries, query)
+    except Exception as e:
+        logger.warning(f"Failed to parse generated sub-queries: {e}. Using the original query only.")
+        return [query]
 
 async def plan_research_outline(
     query: str,

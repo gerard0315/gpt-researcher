@@ -90,20 +90,38 @@ async def create_chat_completion(
 
     provider = get_llm(llm_provider, **provider_kwargs)
     response = ""
+    last_error = None
     # create response
-    for _ in range(10):  # maximum of 10 attempts
-        response = await provider.get_chat_response(
-            messages, stream, websocket, **kwargs
-        )
+    for attempt in range(3):  # maximum of 3 attempts
+        try:
+            response = await provider.get_chat_response(
+                messages, stream, websocket, **kwargs
+            )
 
-        if cost_callback:
-            llm_costs = estimate_llm_cost(str(messages), response)
-            cost_callback(llm_costs)
+            if cost_callback:
+                llm_costs = estimate_llm_cost(str(messages), response)
+                cost_callback(llm_costs)
 
-        return response
+            return response
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            # Only retry on transient/connection errors
+            is_transient = any(s in error_str for s in [
+                "connection", "timeout", "server disconnected",
+                "remote protocol error", "temporarily unavailable",
+                "502", "503", "504",
+            ])
+            if is_transient and attempt < 2:
+                wait = 2 ** attempt  # 1s, 2s
+                logging.warning(f"Transient error from {llm_provider} (attempt {attempt + 1}/3): {e}. Retrying in {wait}s...")
+                import asyncio
+                await asyncio.sleep(wait)
+                continue
+            raise
 
-    logging.error(f"Failed to get response from {llm_provider} API")
-    raise RuntimeError(f"Failed to get response from {llm_provider} API")
+    logging.error(f"Failed to get response from {llm_provider} API after 3 attempts")
+    raise RuntimeError(f"Failed to get response from {llm_provider} API: {last_error}")
 
 
 async def construct_subtopics(

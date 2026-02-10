@@ -2,6 +2,7 @@ import asyncio
 import random
 import logging
 import os
+from typing import Any
 from ..actions.utils import stream_output
 from ..actions.query_processing import plan_research_outline, get_search_results
 from ..document import DocumentLoader, OnlineDocumentLoader, LangChainDocumentLoader
@@ -21,6 +22,90 @@ class ResearchConductor:
         self._mcp_results_cache = None
         # Track MCP query count for balanced mode
         self._mcp_query_count = 0
+        # Detailed trace logging is enabled by default and can be turned off with
+        # DETAILED_RESEARCH_LOGGING=false.
+        self.detailed_logging = self._env_flag("DETAILED_RESEARCH_LOGGING", True)
+        self.max_trace_results = self._env_int("DETAILED_RESEARCH_LOG_MAX_RESULTS", 5, minimum=1)
+        self.max_trace_chars = self._env_int("DETAILED_RESEARCH_LOG_MAX_CHARS", 320, minimum=80)
+
+    @staticmethod
+    def _env_flag(name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _env_int(name: str, default: int, minimum: int = 0) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return max(minimum, int(raw))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _ensure_list(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        return [value]
+
+    def _truncate_text(self, value: Any, max_chars: int | None = None) -> str:
+        if value is None:
+            return ""
+        text = " ".join(str(value).split())
+        limit = max_chars or self.max_trace_chars
+        if limit <= 3 or len(text) <= limit:
+            return text
+        return f"{text[:limit - 3]}..."
+
+    def _build_result_previews(self, results: Any) -> list[dict[str, str]]:
+        preview_items: list[dict[str, str]] = []
+        for result in self._ensure_list(results)[:self.max_trace_results]:
+            if isinstance(result, dict):
+                preview_items.append({
+                    "title": self._truncate_text(result.get("title") or result.get("name") or "Untitled", 180),
+                    "url": str(result.get("href") or result.get("url") or result.get("source") or ""),
+                    "snippet": self._truncate_text(
+                        result.get("body")
+                        or result.get("content")
+                        or result.get("snippet")
+                        or result.get("text")
+                        or "",
+                        self.max_trace_chars,
+                    ),
+                })
+            else:
+                preview_items.append({
+                    "title": "Raw result",
+                    "url": "",
+                    "snippet": self._truncate_text(result, self.max_trace_chars),
+                })
+        return preview_items
+
+    async def _emit_detailed_log(self, content: str, output: str, metadata: dict | None = None):
+        if not self.detailed_logging:
+            return
+
+        safe_metadata = metadata or {}
+        await stream_output(
+            "logs",
+            content,
+            output,
+            self.researcher.websocket,
+            True,
+            safe_metadata,
+        )
+        if self.json_handler:
+            self.json_handler.log_event(content, {
+                "output": output,
+                "metadata": safe_metadata
+            })
 
     async def plan_research(self, query, query_domains=None):
         """Gets the sub-queries from the query
@@ -38,6 +123,16 @@ class ResearchConductor:
 
         search_results = await get_search_results(query, self.researcher.retrievers[0], query_domains, researcher=self.researcher)
         self.logger.info(f"Initial search results obtained: {len(search_results)} results")
+        await self._emit_detailed_log(
+            "planning_search_results",
+            f"Planning search returned {len(search_results)} results for '{query}'.",
+            {
+                "query": query,
+                "retriever": self.researcher.retrievers[0].__name__,
+                "result_count": len(search_results),
+                "results": self._build_result_previews(search_results),
+            },
+        )
 
         await stream_output(
             "logs",
@@ -61,6 +156,15 @@ class ResearchConductor:
             **self.researcher.kwargs
         )
         self.logger.info(f"Research outline planned: {outline}")
+        outline_queries = [self._truncate_text(item, 260) for item in self._ensure_list(outline)]
+        await self._emit_detailed_log(
+            "planner_generated_queries",
+            f"Planner generated {len(outline_queries)} query candidates.",
+            {
+                "query": query,
+                "sub_queries": outline_queries,
+            },
+        )
         return outline
 
     async def conduct_research(self):
@@ -306,6 +410,14 @@ class ResearchConductor:
         # Generate Sub-Queries including original query
         sub_queries = await self.plan_research(query, query_domains)
         self.logger.info(f"Generated sub-queries: {sub_queries}")
+        await self._emit_detailed_log(
+            "generated_subqueries_trace",
+            f"Generated {len(sub_queries)} sub-queries for '{query}'.",
+            {
+                "query": query,
+                "sub_queries": sub_queries,
+            },
+        )
         
         # If this is not part of a sub researcher, add original query to research for better results
         if self.researcher.report_type != "subtopic_report":
@@ -423,8 +535,13 @@ class ResearchConductor:
         
         return all_mcp_context
 
-    async def _process_sub_query(self, sub_query: str, scraped_data: list = [], query_domains: list = []):
+    async def _process_sub_query(self, sub_query: str, scraped_data: list | None = None, query_domains: list | None = None):
         """Takes in a sub query and scrapes urls based on it and gathers context."""
+        if scraped_data is None:
+            scraped_data = []
+        if query_domains is None:
+            query_domains = []
+
         if self.json_handler:
             self.json_handler.log_event("sub_query", {
                 "query": sub_query,
@@ -511,6 +628,18 @@ class ResearchConductor:
             if combined_context:
                 context_length = len(str(combined_context))
                 self.logger.info(f"Combined context for '{sub_query}': {context_length} chars")
+                answer_preview = self._truncate_text(combined_context, self.max_trace_chars * 4)
+                await self._emit_detailed_log(
+                    "subquery_answer_trace",
+                    f"Answer preview captured for '{sub_query}'.",
+                    {
+                        "sub_query": sub_query,
+                        "answer_preview": answer_preview,
+                        "content_size": context_length,
+                        "mcp_sources": len(mcp_context),
+                        "web_content": bool(web_context),
+                    },
+                )
                 
                 if self.researcher.verbose:
                     mcp_count = len(mcp_context)
@@ -525,6 +654,17 @@ class ResearchConductor:
                     )
             else:
                 self.logger.warning(f"No combined context found for sub-query: {sub_query}")
+                await self._emit_detailed_log(
+                    "subquery_answer_trace",
+                    f"No combined context found for '{sub_query}'.",
+                    {
+                        "sub_query": sub_query,
+                        "answer_preview": "",
+                        "content_size": 0,
+                        "mcp_sources": len(mcp_context),
+                        "web_content": bool(web_context),
+                    },
+                )
                 if self.researcher.verbose:
                     await stream_output(
                         "logs",
@@ -745,6 +885,16 @@ class ResearchConductor:
                 search_results = await asyncio.to_thread(
                     retriever.search, max_results=self.researcher.cfg.max_search_results_per_query
                 )
+                await self._emit_detailed_log(
+                    "retriever_search_trace",
+                    f"{retriever_class.__name__} returned {len(search_results)} results for '{query}'.",
+                    {
+                        "query": query,
+                        "retriever": retriever_class.__name__,
+                        "result_count": len(search_results),
+                        "results": self._build_result_previews(search_results),
+                    },
+                )
 
                 # Collect new URLs from search results
                 search_urls = [url.get("href") for url in search_results if url.get("href")]
@@ -754,6 +904,15 @@ class ResearchConductor:
 
         # Get unique URLs
         new_search_urls = await self._get_new_urls(new_search_urls)
+        await self._emit_detailed_log(
+            "subquery_url_selection_trace",
+            f"Selected {len(new_search_urls)} unique URLs for '{query}'.",
+            {
+                "query": query,
+                "url_count": len(new_search_urls),
+                "urls": new_search_urls[:self.max_trace_results],
+            },
+        )
         random.shuffle(new_search_urls)
 
         return new_search_urls
@@ -963,4 +1122,3 @@ class ResearchConductor:
                     "progress": progress
                 }
             )
-

@@ -11,7 +11,19 @@ from report_type import BasicReport, DetailedReport
 
 from gpt_researcher.utils.enum import ReportType, Tone
 from gpt_researcher.actions import stream_output  # Import stream_output
+from multi_agents.main import run_research_task
 from .server_utils import CustomLogsHandler
+import os
+
+# Capture initial environment variables for restoration
+INITIAL_ENV = {
+    "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
+    "OPENAI_BASE_URL": os.environ.get("OPENAI_BASE_URL"),
+    "FAST_LLM": os.environ.get("FAST_LLM"),
+    "SMART_LLM": os.environ.get("SMART_LLM"),
+    "STRATEGIC_LLM": os.environ.get("STRATEGIC_LLM"),
+    "RETRIEVER": os.environ.get("RETRIEVER"),
+}
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +107,7 @@ class WebSocketManager:
             except:
                 pass  # If this fails too, there's nothing more we can do
 
-    async def start_streaming(self, task, report_type, report_source, source_urls, document_urls, tone, websocket, headers=None, query_domains=[], mcp_enabled=False, mcp_strategy="fast", mcp_configs=[]):
+    async def start_streaming(self, task, report_type, report_source, source_urls, document_urls, tone, websocket, headers=None, query_domains=[], mcp_enabled=False, mcp_strategy="fast", mcp_configs=[], api_provider="official"):
         """Start streaming the output."""
         tone = Tone[tone]
         # add customized JSON config file path here
@@ -105,32 +117,74 @@ class WebSocketManager:
         report = await run_agent(
             task, report_type, report_source, source_urls, document_urls, tone, websocket, 
             headers=headers, query_domains=query_domains, config_path=config_path,
-            mcp_enabled=mcp_enabled, mcp_strategy=mcp_strategy, mcp_configs=mcp_configs
+            mcp_enabled=mcp_enabled, mcp_strategy=mcp_strategy, mcp_configs=mcp_configs,
+            api_provider=api_provider
         )
         return report
 
-async def run_agent(task, report_type, report_source, source_urls, document_urls, tone: Tone, websocket, stream_output=stream_output, headers=None, query_domains=[], config_path="", return_researcher=False, mcp_enabled=False, mcp_strategy="fast", mcp_configs=[]):
+async def run_agent(task, report_type, report_source, source_urls, document_urls, tone: Tone, websocket, stream_output=stream_output, headers=None, query_domains=[], config_path="", return_researcher=False, mcp_enabled=False, mcp_strategy="fast", mcp_configs=[], api_provider="official"):
     """Run the agent."""    
     # Create logs handler for this research task
     logs_handler = CustomLogsHandler(websocket, task)
 
+    # Configure API Provider
+    if api_provider == "bltcy":
+        print(f"🔄 Switching to BLTCY API Provider")
+        # Use BLTCY key if available, otherwise fallback to empty string (which will cause error later likely)
+        os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_KEY_BLTCY", "")
+        os.environ["OPENAI_BASE_URL"] = "https://api.bltcy.ai/v1"
+        os.environ["FAST_LLM"] = "openai:gpt-5.2-pro"
+        os.environ["SMART_LLM"] = "openai:gpt-5.2-pro"
+        os.environ["STRATEGIC_LLM"] = "openai:gpt-5.2-pro"
+    elif api_provider == "official":
+        print(f"🔄 Switching to Official OpenAI Provider")
+        # Restore initial values
+        if INITIAL_ENV["OPENAI_API_KEY"]:
+            os.environ["OPENAI_API_KEY"] = INITIAL_ENV["OPENAI_API_KEY"]
+        else:
+             os.environ.pop("OPENAI_API_KEY", None)
+        
+        if INITIAL_ENV["OPENAI_BASE_URL"]:
+            os.environ["OPENAI_BASE_URL"] = INITIAL_ENV["OPENAI_BASE_URL"]
+        else:
+            # If it wasn't set initially, remove it to fallback to default
+            os.environ.pop("OPENAI_BASE_URL", None)
+            
+        # Restore LLM models
+        for key in ["FAST_LLM", "SMART_LLM", "STRATEGIC_LLM"]:
+            if INITIAL_ENV[key]:
+                os.environ[key] = INITIAL_ENV[key]
+            else:
+                os.environ.pop(key, None)
+
     # Set up MCP configuration if enabled
-    if mcp_enabled and mcp_configs:
-        import os
-        current_retriever = os.getenv("RETRIEVER", "tavily")
-        if "mcp" not in current_retriever:
-            # Add MCP to existing retrievers
-            os.environ["RETRIEVER"] = f"{current_retriever},mcp"
+    if mcp_enabled:
+        # If MCP is enabled but no configs were provided by the UI, fall back to env.
+        if not mcp_configs:
+            raw_env_mcp_servers = os.getenv("MCP_SERVERS", "")
+            if raw_env_mcp_servers:
+                try:
+                    parsed_servers = json.loads(raw_env_mcp_servers)
+                    if isinstance(parsed_servers, list):
+                        mcp_configs = parsed_servers
+                except Exception:
+                    mcp_configs = []
 
-        # Set MCP strategy
-        os.environ["MCP_STRATEGY"] = mcp_strategy
+        if mcp_configs:
+            current_retriever = os.getenv("RETRIEVER", "tavily")
+            if "mcp" not in current_retriever:
+                # Add MCP to existing retrievers
+                os.environ["RETRIEVER"] = f"{current_retriever},mcp"
 
-        print(f"🔧 MCP enabled with strategy '{mcp_strategy}' and {len(mcp_configs)} server(s)")
-        await logs_handler.send_json({
-            "type": "logs",
-            "content": "mcp_init",
-            "output": f"🔧 MCP enabled with strategy '{mcp_strategy}' and {len(mcp_configs)} server(s)"
-        })
+            # Set MCP strategy
+            os.environ["MCP_STRATEGY"] = mcp_strategy
+
+            print(f"🔧 MCP enabled with strategy '{mcp_strategy}' and {len(mcp_configs)} server(s)")
+            await logs_handler.send_json({
+                "type": "logs",
+                "content": "mcp_init",
+                "output": f"🔧 MCP enabled with strategy '{mcp_strategy}' and {len(mcp_configs)} server(s)"
+            })
 
     # Initialize researcher based on report type
     if report_type == "multi_agents":

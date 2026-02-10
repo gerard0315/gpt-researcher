@@ -16,6 +16,8 @@ async def test_custom_logs_handler():
     
     # Verify log file creation
     assert os.path.exists(handler.log_file)
+    assert os.path.exists(handler.log_dir)
+    assert os.path.exists(handler.events_file)
     
     # Test sending log data
     test_data = {
@@ -33,6 +35,12 @@ async def test_custom_logs_handler():
         log_data = json.load(f)
         assert len(log_data['events']) == 1
         assert log_data['events'][0]['data'] == test_data 
+
+    with open(handler.events_file, 'r') as f:
+        log_data = json.load(f)
+        assert len(log_data['events']) == 1
+
+    assert os.path.exists(handler.detailed_events_file)
 
 @pytest.mark.asyncio
 async def test_content_update():
@@ -59,3 +67,7 @@ async def test_content_update():
         assert log_data['content']['query'] == "test query"
         assert log_data['content']['sources'] == ["source1", "source2"]
         assert log_data['content']['report'] == "test report"
+
+    with open(handler.events_file, 'r') as f:
+        log_data = json.load(f)
+        assert log_data['content']['query'] == "test query"

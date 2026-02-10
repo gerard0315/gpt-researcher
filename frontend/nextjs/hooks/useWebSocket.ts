@@ -4,7 +4,7 @@ import { getHost } from '../helpers/getHost';
 
 export const useWebSocket = (
   setOrderedData: React.Dispatch<React.SetStateAction<Data[]>>,
-  setAnswer: React.Dispatch<React.SetStateAction<string>>, 
+  setAnswer: React.Dispatch<React.SetStateAction<string>>,
   setLoading: React.Dispatch<React.SetStateAction<boolean>>,
   setShowHumanFeedback: React.Dispatch<React.SetStateAction<boolean>>,
   setQuestionForHuman: React.Dispatch<React.SetStateAction<boolean | true>>
@@ -19,7 +19,7 @@ export const useWebSocket = (
       if (heartbeatInterval.current) {
         clearInterval(heartbeatInterval.current);
       }
-      
+
       // Close socket on unmount if it exists and is open
       if (socket && socket.readyState === WebSocket.OPEN) {
         console.log('Closing WebSocket due to component unmount');
@@ -33,7 +33,7 @@ export const useWebSocket = (
     if (heartbeatInterval.current) {
       clearInterval(heartbeatInterval.current);
     }
-    
+
     // Start new heartbeat
     heartbeatInterval.current = window.setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -43,7 +43,7 @@ export const useWebSocket = (
   };
 
   const initializeWebSocket = useCallback((
-    promptValue: string, 
+    promptValue: string,
     chatBoxSettings: ChatBoxSettings
   ) => {
     // Close existing socket if any
@@ -56,7 +56,7 @@ export const useWebSocket = (
     const apiVariables = storedConfig ? JSON.parse(storedConfig) : {};
 
     if (typeof window !== 'undefined') {
-      
+
       let fullHost = getHost()
       const protocol = fullHost.includes('https') ? 'wss:' : 'ws:'
       const cleanHost = fullHost.replace('http://', '').replace('https://', '')
@@ -69,25 +69,26 @@ export const useWebSocket = (
       // WebSocket connection opened handler
       newSocket.onopen = () => {
         console.log('WebSocket connection opened');
-        
+
         const domainFilters = JSON.parse(localStorage.getItem('domainFilters') || '[]');
         const domains = domainFilters ? domainFilters.map((domain: any) => domain.value) : [];
-        const { report_type, report_source, tone, mcp_enabled, mcp_configs, mcp_strategy } = chatBoxSettings;
-        
+        const { report_type, report_source, tone, mcp_enabled, mcp_configs, mcp_strategy, api_provider } = chatBoxSettings;
+
         // Start a new research
         try {
           console.log(`Starting new research for: ${promptValue}`);
-          const dataToSend = { 
+          const dataToSend = {
             task: promptValue,
-            report_type, 
-            report_source, 
+            report_type,
+            report_source,
             tone,
             query_domains: domains,
             mcp_enabled: mcp_enabled || false,
             mcp_strategy: mcp_strategy || "fast",
-            mcp_configs: mcp_configs || []
+            mcp_configs: mcp_configs || [],
+            api_provider: api_provider || "official"
           };
-          
+
           // Make sure we have a properly formatted command with a space after start
           const message = `start ${JSON.stringify(dataToSend)}`;
           console.log(`Sending start message, length: ${message.length}`);
@@ -95,7 +96,7 @@ export const useWebSocket = (
         } catch (error) {
           console.error("Error preparing start message:", error);
         }
-        
+
         startHeartbeat(newSocket);
       };
 
@@ -107,7 +108,7 @@ export const useWebSocket = (
           // Try to parse JSON data
           console.log(`Received WebSocket message: ${event.data.substring(0, 100)}...`);
           const data = JSON.parse(event.data);
-          
+
           if (data.type === 'error') {
             console.error(`Server error: ${data.output}`);
           } else if (data.type === 'human_feedback' && data.content === 'request') {
@@ -118,7 +119,8 @@ export const useWebSocket = (
             setOrderedData((prevOrder) => [...prevOrder, { ...data, contentAndType }]);
 
             if (data.type === 'report') {
-              setAnswer((prev: string) => prev + data.output);
+              const outputStr = typeof data.output === 'string' ? data.output : JSON.stringify(data.output);
+              setAnswer((prev: string) => prev + outputStr);
             } else if (data.type === 'path') {
               setLoading(false);
             }

@@ -71,7 +71,7 @@ const LogMessage: React.FC<LogMessageProps> = ({ logs }) => {
               className="w-full max-w-4xl mx-auto rounded-lg pt-2 mt-3 pb-2 px-4 bg-gray-900 shadow-md"
             >
               <p className="py-3 text-base leading-relaxed text-white dark:text-white">
-                {log.text}
+                {typeof log.text === 'string' ? log.text : JSON.stringify(log.text)}
               </p>
             </div>
           );

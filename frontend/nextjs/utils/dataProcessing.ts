@@ -23,7 +23,7 @@ export const preprocessOrderedData = (data: Data[]) => {
         currentReportGroup = { type: 'reportBlock', content: '' };
         groupedData.push(currentReportGroup);
       }
-      currentReportGroup.content += output;
+      currentReportGroup.content += typeof output === 'string' ? output : JSON.stringify(output);
     } else if (content === 'selected_images') {
       groupedData.push({ type: 'imagesBlock', metadata });
     } else if (type === 'logs' && content === 'research_report') {

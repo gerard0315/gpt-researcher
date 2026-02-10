@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import FileUpload from "../Settings/FileUpload";
 import ToneSelector from "../Settings/ToneSelector";
+import ApiProviderSelector from "../Settings/ApiProviderSelector";
 import MCPSelector from "../Settings/MCPSelector";
 import LayoutSelector from "../Settings/LayoutSelector";
 import DomainFilter from "./DomainFilter";
@@ -28,16 +29,19 @@ export default function ResearchForm({
   const [newDomain, setNewDomain] = useState('');
 
   // Destructure necessary fields from chatBoxSettings
-  let { report_type, report_source, tone, layoutType } = chatBoxSettings;
+  let { report_type, report_source, tone, layoutType, api_provider } = chatBoxSettings;
 
-  const [domains, setDomains] = useState<Domain[]>(() => {
+  const [domains, setDomains] = useState<Domain[]>([]);
+
+  useEffect(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('domainFilters');
-      return saved ? JSON.parse(saved) : [];
+      if (saved) {
+        setDomains(JSON.parse(saved));
+      }
     }
-    return [];
-  });
-  
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('domainFilters', JSON.stringify(domains));
     setChatBoxSettings(prev => ({
@@ -87,6 +91,14 @@ export default function ResearchForm({
       ...prevSettings,
       mcp_enabled: enabled,
       mcp_configs: configs,
+    }));
+  };
+
+  const onApiProviderChange = (e: { target: { value: any } }) => {
+    const { value } = e.target;
+    setChatBoxSettings((prevSettings: any) => ({
+      ...prevSettings,
+      api_provider: value,
     }));
   };
 
@@ -147,20 +159,25 @@ export default function ResearchForm({
         </select>
       </div>
 
-      
+
 
       {report_source === "local" || report_source === "hybrid" ? (
         <FileUpload />
       ) : null}
-      
+
       <ToneSelector tone={tone} onToneChange={onToneChange} />
 
-      <MCPSelector 
+      <MCPSelector
         mcpEnabled={chatBoxSettings.mcp_enabled || false}
         mcpConfigs={chatBoxSettings.mcp_configs || []}
         onMCPChange={onMCPChange}
       />
-      
+
+      <ApiProviderSelector
+        apiProvider={api_provider}
+        onApiProviderChange={onApiProviderChange}
+      />
+
       <LayoutSelector layoutType={layoutType || 'copilot'} onLayoutChange={onLayoutChange} />
 
       {/** TODO: move the below to its own component */}

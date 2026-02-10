@@ -24,47 +24,77 @@ class CustomLogsHandler:
         self.logs = []
         self.websocket = websocket
         sanitized_filename = sanitize_filename(f"task_{int(time.time())}_{task}")
+        self.log_id = sanitized_filename
         self.log_file = os.path.join("outputs", f"{sanitized_filename}.json")
+        self.log_dir = os.path.join("outputs", "research_logs", sanitized_filename)
+        self.events_file = os.path.join(self.log_dir, "events.json")
+        self.detailed_events_file = os.path.join(self.log_dir, "events.jsonl")
         self.timestamp = datetime.now().isoformat()
+        self._lock = asyncio.Lock()
         # Initialize log file with metadata
         os.makedirs("outputs", exist_ok=True)
-        with open(self.log_file, 'w') as f:
-            json.dump({
-                "timestamp": self.timestamp,
-                "events": [],
-                "content": {
-                    "query": "",
-                    "sources": [],
-                    "context": [],
-                    "report": "",
-                    "costs": 0.0
-                }
-            }, f, indent=2)
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        self._log_data = {
+            "timestamp": self.timestamp,
+            "log_id": self.log_id,
+            "log_directory": self.log_dir,
+            "events": [],
+            "content": {
+                "query": "",
+                "sources": [],
+                "context": [],
+                "report": "",
+                "costs": 0.0
+            }
+        }
+        self._persist_snapshots()
+
+    def _persist_snapshots(self) -> None:
+        for file_path in (self.log_file, self.events_file):
+            with open(file_path, "w") as f:
+                json.dump(self._log_data, f, indent=2, default=str)
+
+    def _append_jsonl_event(self, record: Dict[str, Any]) -> None:
+        with open(self.detailed_events_file, "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
 
     async def send_json(self, data: Dict[str, Any]) -> None:
         """Store log data and send to websocket"""
         # Send to websocket for real-time display
         if self.websocket:
             await self.websocket.send_json(data)
-            
-        # Read current log file
-        with open(self.log_file, 'r') as f:
-            log_data = json.load(f)
-            
-        # Update appropriate section based on data type
-        if data.get('type') == 'logs':
-            log_data['events'].append({
-                "timestamp": datetime.now().isoformat(),
-                "type": "event",
-                "data": data
-            })
-        else:
-            # Update content section for other types of data
-            log_data['content'].update(data)
-            
-        # Save updated log file
-        with open(self.log_file, 'w') as f:
-            json.dump(log_data, f, indent=2)
+
+        event_timestamp = datetime.now().isoformat()
+        async with self._lock:
+            # Update appropriate section based on data type
+            if data.get('type') == 'logs':
+                event_record = {
+                    "timestamp": event_timestamp,
+                    "type": "event",
+                    "data": data
+                }
+                self._log_data["events"].append(event_record)
+                self._append_jsonl_event({
+                    "timestamp": event_timestamp,
+                    "event_type": "stream_log",
+                    "content": data.get("content", ""),
+                    "output": data.get("output", ""),
+                    "metadata": data.get("metadata"),
+                    "data": data,
+                })
+            else:
+                # Update content section for other types of data
+                self._log_data["content"].update(data)
+                self._append_jsonl_event({
+                    "timestamp": event_timestamp,
+                    "event_type": "content_update",
+                    "data": data,
+                })
+
+            # Keep an always-updated snapshot in both legacy and per-research paths
+            self._log_data["updated_at"] = event_timestamp
+            self._persist_snapshots()
 
 
 class Researcher:
@@ -131,6 +161,7 @@ async def handle_start_command(websocket, data: str, manager):
         mcp_enabled,
         mcp_strategy,
         mcp_configs,
+        api_provider,
     ) = extract_command_data(json_data)
 
     if not task or not report_type:
@@ -162,6 +193,7 @@ async def handle_start_command(websocket, data: str, manager):
         mcp_enabled,
         mcp_strategy,
         mcp_configs,
+        api_provider,
     )
     report = str(report)
     file_paths = await generate_report_files(report, sanitized_filename)
@@ -188,10 +220,8 @@ async def handle_human_feedback(data: str):
     # TODO: Add logic to forward the feedback to the appropriate agent or update the research state
 
 async def generate_report_files(report: str, filename: str) -> Dict[str, str]:
-    pdf_path = await write_md_to_pdf(report, filename)
-    docx_path = await write_md_to_word(report, filename)
     md_path = await write_text_to_md(report, filename)
-    return {"pdf": pdf_path, "docx": docx_path, "md": md_path}
+    return {"pdf": "", "docx": "", "md": md_path}
 
 
 async def send_file_paths(websocket, file_paths: Dict[str, str]):
@@ -339,4 +369,5 @@ def extract_command_data(json_data: Dict) -> tuple:
         json_data.get("mcp_enabled", False),
         json_data.get("mcp_strategy", "fast"),
         json_data.get("mcp_configs", []),
+        json_data.get("api_provider", "official"),
     )

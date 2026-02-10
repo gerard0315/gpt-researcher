@@ -52,9 +52,8 @@ async def write_md_to_pdf(text: str, filename: str = "") -> str:
 
         from md2pdf.core import md2pdf
         md2pdf(file_path,
-               md_content=text,
-               # md_file_path=f"{file_path}.md",
-               css_file_path=css_path,
+               raw=text,
+               css=css_path,
                base_url=None)
         print(f"Report written to {file_path}")
     except Exception as e:
