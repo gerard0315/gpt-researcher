@@ -65,93 +65,101 @@ class DeepResearchSkill:
         self.context = []  # Track all context
 
     async def generate_search_queries(self, query: str, num_queries: int = 3) -> List[Dict[str, str]]:
-        """Generate SERP queries for research"""
-        working_query = await get_working_query_for_planning(
-            query=query,
-            cfg=self.researcher.cfg,
-            cost_callback=self.researcher.add_costs,
-        )
+        """Generate SERP queries for research.
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert researcher generating search queries. "
-                    "Do not invent specific facts (funding amounts, valuations, named investors, dates, legal entities) "
-                    "unless explicitly present in the input. Keep all queries anchored to the same primary subject."
-                ),
-            },
-            {"role": "user",
-             "content": (
-                 f"Given the following prompt, generate {num_queries} unique search queries to research the topic thoroughly. "
-                 "For each query, provide a research goal. "
-                 "Use neutral, verification-oriented wording and avoid speculative exact numbers or names not present in the prompt. "
-                 "If a domain is present, include it in query framing. "
-                 "Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: "
-                 f"{working_query}"
-             )}
-        ]
+        Best-effort: if anything fails, returns a single-query fallback so the
+        research pipeline continues uninterrupted.
+        """
+        try:
+            working_query = await get_working_query_for_planning(
+                query=query,
+                cfg=self.researcher.cfg,
+                cost_callback=self.researcher.add_costs,
+            )
 
-        response = await create_chat_completion(
-            messages=messages,
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            reasoning_effort=self.researcher.cfg.reasoning_effort,
-            temperature=0.4
-        )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert researcher generating search queries. "
+                        "Do not invent specific facts (funding amounts, valuations, named investors, dates, legal entities) "
+                        "unless explicitly present in the input. Keep all queries anchored to the same primary subject."
+                    ),
+                },
+                {"role": "user",
+                 "content": (
+                     f"Given the following prompt, generate {num_queries} unique search queries to research the topic thoroughly. "
+                     "For each query, provide a research goal. "
+                     "Use neutral, verification-oriented wording and avoid speculative exact numbers or names not present in the prompt. "
+                     "If a domain is present, include it in query framing. "
+                     "Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: "
+                     f"{working_query}"
+                 )}
+            ]
 
-        lines = response.split('\n')
-        queries = []
-        current_query = {}
+            response = await create_chat_completion(
+                messages=messages,
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                reasoning_effort=self.researcher.cfg.reasoning_effort,
+                temperature=0.4
+            )
 
-        for line in lines:
-            line = line.strip()
-            if line.startswith('Query:'):
-                if current_query:
-                    queries.append(current_query)
-                current_query = {'query': line.replace('Query:', '').strip()}
-            elif line.startswith('Goal:') and current_query:
-                current_query['researchGoal'] = line.replace('Goal:', '').strip()
+            lines = response.split('\n')
+            queries = []
+            current_query = {}
 
-        if current_query:
-            queries.append(current_query)
+            for line in lines:
+                line = line.strip()
+                if line.startswith('Query:'):
+                    if current_query:
+                        queries.append(current_query)
+                    current_query = {'query': line.replace('Query:', '').strip()}
+                elif line.startswith('Goal:') and current_query:
+                    current_query['researchGoal'] = line.replace('Goal:', '').strip()
 
-        queries = queries[:num_queries]
-        generated_query_text = [item.get("query", "") for item in queries if item.get("query")]
-        grounded_query_text = ground_generated_queries(
-            generated_query_text,
-            query,
-            max_queries=num_queries,
-        )
+            if current_query:
+                queries.append(current_query)
 
-        query_to_goal = {
-            item.get("query", ""): item.get("researchGoal", "")
-            for item in queries
-            if item.get("query")
-        }
+            queries = queries[:num_queries]
+            generated_query_text = [item.get("query", "") for item in queries if item.get("query")]
+            grounded_query_text = ground_generated_queries(
+                generated_query_text,
+                query,
+                max_queries=num_queries,
+            )
 
-        grounded_queries: list[dict[str, str]] = []
-        for grounded_query in grounded_query_text:
-            goal = query_to_goal.get(grounded_query, "").strip()
-            if not goal:
-                lowered = grounded_query.lower()
-                if "site:" in lowered:
-                    goal = "Verify subject identity and first-party facts on official sources."
-                elif any(token in lowered for token in ["funding", "investor", "valuation", "融资", "投资"]):
-                    goal = "Collect externally verifiable capital and financing evidence for the same subject."
-                elif any(token in lowered for token in ["product", "pricing", "api", "benchmark", "技术", "产品"]):
-                    goal = "Collect product and technical evidence directly tied to the target subject."
-                else:
-                    goal = "Collect reliable evidence tied to the target subject."
-            grounded_queries.append({"query": grounded_query, "researchGoal": goal})
+            query_to_goal = {
+                item.get("query", ""): item.get("researchGoal", "")
+                for item in queries
+                if item.get("query")
+            }
 
-        if not grounded_queries:
-            grounded_queries = [{
-                "query": working_query,
-                "researchGoal": "Collect reliable evidence tied to the target subject.",
-            }]
+            grounded_queries: list[dict[str, str]] = []
+            for grounded_query in grounded_query_text:
+                goal = query_to_goal.get(grounded_query, "").strip()
+                if not goal:
+                    lowered = grounded_query.lower()
+                    if "site:" in lowered:
+                        goal = "Verify subject identity and first-party facts on official sources."
+                    elif any(token in lowered for token in ["funding", "investor", "valuation", "融资", "投资"]):
+                        goal = "Collect externally verifiable capital and financing evidence for the same subject."
+                    elif any(token in lowered for token in ["product", "pricing", "api", "benchmark", "技术", "产品"]):
+                        goal = "Collect product and technical evidence directly tied to the target subject."
+                    else:
+                        goal = "Collect reliable evidence tied to the target subject."
+                grounded_queries.append({"query": grounded_query, "researchGoal": goal})
 
-        return grounded_queries[:num_queries]
+            if not grounded_queries:
+                grounded_queries = [{
+                    "query": working_query,
+                    "researchGoal": "Collect reliable evidence tied to the target subject.",
+                }]
+
+            return grounded_queries[:num_queries]
+        except Exception as exc:
+            logger.error("generate_search_queries failed (%s), falling back to original query.", exc)
+            return [{"query": query, "researchGoal": "Collect reliable evidence tied to the target subject."}]
 
     async def generate_research_plan(self, query: str, num_questions: int = 3) -> List[str]:
         """Generate follow-up questions to clarify research direction"""

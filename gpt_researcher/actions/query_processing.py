@@ -193,8 +193,10 @@ def _contains_anchor(text: str, anchors: Dict[str, List[str]]) -> bool:
 
 
 def _build_anchor_prefix(anchors: Dict[str, List[str]]) -> str:
-    alias = anchors.get("aliases", [None])[0]
-    domain = anchors.get("domains", [None])[0]
+    aliases = anchors.get("aliases") or []
+    domains = anchors.get("domains") or []
+    alias = aliases[0] if aliases else None
+    domain = domains[0] if domains else None
 
     if alias and domain:
         return f'("{alias}" OR "{domain}")'
@@ -206,7 +208,8 @@ def _build_anchor_prefix(anchors: Dict[str, List[str]]) -> str:
 
 
 def _build_identity_verification_query(anchors: Dict[str, List[str]], fallback_query: str) -> str:
-    domain = anchors.get("domains", [None])[0]
+    domains = anchors.get("domains") or []
+    domain = domains[0] if domains else None
     anchor_prefix = _build_anchor_prefix(anchors)
 
     if domain:
@@ -225,49 +228,58 @@ def ground_generated_queries(
 ) -> List[str]:
     """
     Ground generated sub-queries to the original subject to reduce entity drift.
+
+    This function is best-effort: if grounding fails for any reason, it returns
+    the original sub_queries (or [original_query]) so that the research pipeline
+    continues uninterrupted.
     """
-    if not sub_queries:
-        return [original_query]
+    fallback = sub_queries if sub_queries else [original_query]
+    try:
+        if not sub_queries:
+            return [original_query]
 
-    anchors = extract_query_anchors(original_query)
-    has_anchors = bool(anchors["domains"] or anchors["aliases"])
+        anchors = extract_query_anchors(original_query)
+        has_anchors = bool(anchors["domains"] or anchors["aliases"])
 
-    grounded: list[str] = []
-    for query in sub_queries:
-        if not isinstance(query, str):
-            continue
-        candidate = re.sub(r"\s+", " ", query).strip()
-        if not candidate:
-            continue
+        grounded: list[str] = []
+        for query in sub_queries:
+            if not isinstance(query, str):
+                continue
+            candidate = re.sub(r"\s+", " ", query).strip()
+            if not candidate:
+                continue
 
-        if has_anchors and not _contains_anchor(candidate, anchors):
-            anchor_prefix = _build_anchor_prefix(anchors)
-            candidate = f"{anchor_prefix} {candidate}".strip() if anchor_prefix else candidate
+            if has_anchors and not _contains_anchor(candidate, anchors):
+                anchor_prefix = _build_anchor_prefix(anchors)
+                candidate = f"{anchor_prefix} {candidate}".strip() if anchor_prefix else candidate
 
-        grounded.append(candidate)
+            grounded.append(candidate)
 
-    grounded = _dedupe_preserve_order(grounded)
+        grounded = _dedupe_preserve_order(grounded)
 
-    if has_anchors:
-        primary_domain = anchors["domains"][0] if anchors["domains"] else None
-        has_identity_query = any(
-            (f"site:{primary_domain}" in q.lower()) if primary_domain else False
-            for q in grounded
-        )
-        if not has_identity_query:
-            identity_query = _build_identity_verification_query(anchors, original_query)
-            if grounded:
-                grounded[0] = identity_query
-            else:
-                grounded = [identity_query]
+        if has_anchors:
+            primary_domain = anchors["domains"][0] if anchors["domains"] else None
+            has_identity_query = any(
+                (f"site:{primary_domain}" in q.lower()) if primary_domain else False
+                for q in grounded
+            )
+            if not has_identity_query:
+                identity_query = _build_identity_verification_query(anchors, original_query)
+                if grounded:
+                    grounded[0] = identity_query
+                else:
+                    grounded = [identity_query]
 
-    if not grounded:
-        grounded = [original_query]
+        if not grounded:
+            grounded = [original_query]
 
-    if max_queries is not None and max_queries > 0:
-        grounded = grounded[:max_queries]
+        if max_queries is not None and max_queries > 0:
+            grounded = grounded[:max_queries]
 
-    return grounded
+        return grounded
+    except Exception as exc:
+        logger.warning("Entity grounding failed (%s), using ungrounded queries.", exc)
+        return fallback
 
 
 def _normalize_sub_queries(sub_queries: Any, fallback_query: str) -> List[str]:
@@ -520,37 +532,44 @@ def ground_lane_queries(
     lane_queries: Dict[str, List[str]],
     original_query: str,
 ) -> Dict[str, List[str]]:
-    """Lane-aware grounding: anchor subject/intersection queries, leave concept free."""
-    anchors = extract_query_anchors(original_query)
-    has_anchors = bool(anchors["domains"] or anchors["aliases"])
+    """Lane-aware grounding: anchor subject/intersection queries, leave concept free.
 
-    result: Dict[str, List[str]] = {}
-    for lane, queries in lane_queries.items():
-        grounded: List[str] = []
-        for q in queries:
-            if not isinstance(q, str):
-                continue
-            candidate = re.sub(r"\s+", " ", q).strip()
-            if not candidate:
-                continue
-            if lane in ("subject", "intersection") and has_anchors and not _contains_anchor(candidate, anchors):
-                anchor_prefix = _build_anchor_prefix(anchors)
-                candidate = f"{anchor_prefix} {candidate}".strip() if anchor_prefix else candidate
-            # concept lane: no forced anchor
-            grounded.append(candidate)
-        result[lane] = _dedupe_preserve_order(grounded)
+    Best-effort: returns lane_queries unchanged if grounding fails.
+    """
+    try:
+        anchors = extract_query_anchors(original_query)
+        has_anchors = bool(anchors["domains"] or anchors["aliases"])
 
-    # Ensure subject lane always has an identity query
-    if has_anchors and "subject" in result:
-        primary_domain = anchors["domains"][0] if anchors["domains"] else None
-        has_identity = any(
-            (f"site:{primary_domain}" in q.lower()) if primary_domain else False
-            for q in result["subject"]
-        )
-        if not has_identity:
-            identity_q = _build_identity_verification_query(anchors, original_query)
-            result["subject"].insert(0, identity_q)
-            result["subject"] = _dedupe_preserve_order(result["subject"])
+        result: Dict[str, List[str]] = {}
+        for lane, queries in lane_queries.items():
+            grounded: List[str] = []
+            for q in queries:
+                if not isinstance(q, str):
+                    continue
+                candidate = re.sub(r"\s+", " ", q).strip()
+                if not candidate:
+                    continue
+                if lane in ("subject", "intersection") and has_anchors and not _contains_anchor(candidate, anchors):
+                    anchor_prefix = _build_anchor_prefix(anchors)
+                    candidate = f"{anchor_prefix} {candidate}".strip() if anchor_prefix else candidate
+                # concept lane: no forced anchor
+                grounded.append(candidate)
+            result[lane] = _dedupe_preserve_order(grounded)
+
+        # Ensure subject lane always has an identity query
+        if has_anchors and "subject" in result:
+            primary_domain = anchors["domains"][0] if anchors["domains"] else None
+            has_identity = any(
+                (f"site:{primary_domain}" in q.lower()) if primary_domain else False
+                for q in result["subject"]
+            )
+            if not has_identity:
+                identity_q = _build_identity_verification_query(anchors, original_query)
+                result["subject"].insert(0, identity_q)
+                result["subject"] = _dedupe_preserve_order(result["subject"])
+    except Exception as exc:
+        logger.warning("Lane grounding failed (%s), using ungrounded lane queries.", exc)
+        return lane_queries
 
     logger.debug(
         "After lane grounding: %s",
