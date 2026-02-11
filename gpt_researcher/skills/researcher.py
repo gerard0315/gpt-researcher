@@ -35,6 +35,8 @@ class ResearchConductor:
         self.max_trace_results = self._env_int("DETAILED_RESEARCH_LOG_MAX_RESULTS", 5, minimum=1)
         self.max_trace_chars = self._env_int("DETAILED_RESEARCH_LOG_MAX_CHARS", 320, minimum=80)
         self._query_anchors = extract_query_anchors(self.researcher.query or "")
+        # Track search-result URLs we have already surfaced to avoid re-scraping/logging duplicates
+        self.seen_search_urls: set[str] = set()
 
     @staticmethod
     def _env_flag(name: str, default: bool) -> bool:
@@ -366,6 +368,7 @@ class ResearchConductor:
         
         # Reset visited_urls and source_urls at the start of each research task
         self.researcher.visited_urls.clear()
+        self.seen_search_urls.clear()
         research_data = []
 
         if self.researcher.verbose:
@@ -1099,13 +1102,15 @@ class ResearchConductor:
                     },
                 )
 
-                # Collect new URLs from search results
-                search_urls = [
-                    url.get("href") or url.get("url")
-                    for url in filtered_results
-                    if (url.get("href") or url.get("url"))
-                ]
-                new_search_urls.extend(search_urls)
+                # Collect new URLs from search results, de-duping across sub-queries to save tokens
+                for url in filtered_results:
+                    href = url.get("href") or url.get("url")
+                    if not href:
+                        continue
+                    if href in self.seen_search_urls:
+                        continue
+                    self.seen_search_urls.add(href)
+                    new_search_urls.append(href)
             except Exception as e:
                 self.logger.error(f"Error searching with {retriever_class.__name__}: {e}")
 

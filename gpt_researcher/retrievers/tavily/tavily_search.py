@@ -11,6 +11,8 @@ class TavilySearch:
     """
     Tavily API Retriever
     """
+    # Class-level counter to round-robin starting key across instances
+    _round_robin_counter = 0
 
     def __init__(self, query, headers=None, topic="general", query_domains=None):
         """
@@ -27,7 +29,13 @@ class TavilySearch:
         self.topic = topic
         self.base_url = "https://api.tavily.com/search"
         self.api_keys = self.get_api_keys()
-        self.api_key = self.api_keys[0] if self.api_keys else ""
+        if self.api_keys:
+            start_index = self.__class__._round_robin_counter % len(self.api_keys)
+            self.__class__._round_robin_counter += 1
+            self.api_keys = self.api_keys[start_index:] + self.api_keys[:start_index]
+            self.api_key = self.api_keys[0]
+        else:
+            self.api_key = ""
         self.headers = {
             "Content-Type": "application/json",
         }

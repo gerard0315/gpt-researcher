@@ -58,6 +58,7 @@ VALID_RETRIEVERS = [
     "custom",
     "duckduckgo",
     "searchapi",
+    "serp",
     "serper",
     "serpapi",
     "google",

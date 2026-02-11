@@ -3,11 +3,16 @@ from ..utils import get_relevant_images, extract_title
 from ...utils.api_keys import collect_api_keys, is_probable_quota_or_auth_error
 
 class TavilyExtract:
+    # Class-level counter to distribute usage across keys
+    _round_robin_counter = 0
 
     def __init__(self, link, session=None):
         self.link = link
         self.session = session
         self.api_keys = self.get_api_keys()
+        start_index = self.__class__._round_robin_counter % len(self.api_keys)
+        self.__class__._round_robin_counter += 1
+        self.api_keys = self.api_keys[start_index:] + self.api_keys[:start_index]
 
     def get_api_keys(self) -> list[str]:
         """

@@ -53,6 +53,9 @@ def get_tools():
     return tools
 
 class ChatAgentWithMemory:
+    # Class-level counter to rotate Tavily keys across chat instances
+    _tavily_round_robin_counter = 0
+
     def __init__(
         self,
         report: str,
@@ -71,6 +74,10 @@ class ChatAgentWithMemory:
             fallback_env_var="TAVILY_API_KEY_FALLBACK",
             list_env_var="TAVILY_API_KEYS",
         )
+        if self.tavily_api_keys:
+            start_index = self.__class__._tavily_round_robin_counter % len(self.tavily_api_keys)
+            self.__class__._tavily_round_robin_counter += 1
+            self.tavily_api_keys = self.tavily_api_keys[start_index:] + self.tavily_api_keys[:start_index]
         self.tavily_client = TavilyClient(api_key=self.tavily_api_keys[0]) if self.tavily_api_keys else None
         
         # Process document and create vector store if not provided

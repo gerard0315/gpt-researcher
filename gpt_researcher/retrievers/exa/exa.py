@@ -6,6 +6,8 @@ class ExaSearch:
     """
     Exa API Retriever
     """
+    # Class-level counter so different instances start with different keys (round-robin)
+    _round_robin_counter = 0
 
     def __init__(self, query, query_domains=None):
         """
@@ -18,6 +20,10 @@ class ExaSearch:
         from exa_py import Exa
         self.query = query
         self.api_keys = self._retrieve_api_keys()
+        # Rotate starting key to spread usage across provided keys
+        start_index = self.__class__._round_robin_counter % len(self.api_keys)
+        self.__class__._round_robin_counter += 1
+        self.api_keys = self.api_keys[start_index:] + self.api_keys[:start_index]
         self.api_key = self.api_keys[0]
         self.client = Exa(api_key=self.api_key)
         self.query_domains = query_domains or None

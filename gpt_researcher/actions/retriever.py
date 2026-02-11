@@ -25,6 +25,11 @@ def get_retriever(retriever: str):
             from gpt_researcher.retrievers import SerpApiSearch
 
             return SerpApiSearch
+        case "serp":
+            # Alias for SerpApi
+            from gpt_researcher.retrievers import SerpApiSearch
+
+            return SerpApiSearch
         case "serper":
             from gpt_researcher.retrievers import SerperSearch
 

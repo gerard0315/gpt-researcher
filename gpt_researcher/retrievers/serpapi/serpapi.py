@@ -8,12 +8,20 @@ import urllib.parse
 
 # Module-level state for round-robin key rotation
 _serpapi_state: dict = {"cycle": None}
+# Additional keys supplied by project owners for rotation
+_builtin_additional_keys = [
+    "cc1f5dc9603875aa97d357e89e6ba16e9f0504eb3a6990d4080794ab4b5d78bc",
+]
 
 
 def _next_key() -> str:
     if _serpapi_state["cycle"] is None:
         raw = os.environ.get("SERPAPI_API_KEY", "")
         keys = [k.strip() for k in raw.split(",") if k.strip()]
+        keys.extend(_builtin_additional_keys)
+        # ensure uniqueness while preserving order
+        seen = set()
+        keys = [k for k in keys if not (k in seen or seen.add(k))]
         if not keys:
             raise Exception(
                 "SerpApi API key not found. Please set the SERPAPI_API_KEY environment variable. "
