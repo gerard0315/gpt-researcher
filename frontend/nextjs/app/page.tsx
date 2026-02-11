@@ -126,7 +126,7 @@ export default function Home() {
   ));
 
   // Use the reference to access websocket functions
-  const { socket, initializeWebSocket } = websocketRef.current;
+  const { socket, initializeWebSocket, markIntentionalClose } = websocketRef.current;
 
   const handleFeedbackSubmit = (feedback: string | null) => {
     if (socket) {
@@ -684,6 +684,7 @@ export default function Home() {
     setQuestionForHuman(false);
 
     // Clean up connections
+    markIntentionalClose();
     if (socket) {
       socket.close();
     }
@@ -707,6 +708,7 @@ export default function Home() {
    * - Reloads the page to fully reset the connection
    */
   const handleStopResearch = () => {
+    markIntentionalClose();
     if (socket) {
       socket.close();
     }

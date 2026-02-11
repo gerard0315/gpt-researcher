@@ -80,7 +80,7 @@ export const GPTResearcher = ({
     }
   }, [orderedData, onResultsChange]);
 
-  const { socket, initializeWebSocket } = useWebSocket(
+  const { socket, initializeWebSocket, markIntentionalClose } = useWebSocket(
     setOrderedData,
     setAnswer,
     setLoading,
@@ -199,6 +199,7 @@ export const GPTResearcher = ({
   };
 
   const handleStopResearch = () => {
+    markIntentionalClose();
     if (socket) {
       socket.close();
     }
@@ -210,6 +211,7 @@ export const GPTResearcher = ({
   };
 
   const handleStartNewResearch = () => {
+    markIntentionalClose();
     setShowResult(false);
     setPromptValue("");
     setIsStopped(false);

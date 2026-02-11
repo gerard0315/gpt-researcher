@@ -18,6 +18,9 @@ from server import db
 
 logger = logging.getLogger(__name__)
 
+# Module-level registry of running research tasks: log_id -> CustomLogsHandler
+_active_tasks: Dict[str, "CustomLogsHandler"] = {}
+
 class CustomLogsHandler:
     """Custom handler to capture streaming logs from the research process"""
     def __init__(self, websocket, task: str):
@@ -31,6 +34,8 @@ class CustomLogsHandler:
         self.detailed_events_file = os.path.join(self.log_dir, "events.jsonl")
         self.timestamp = datetime.now().isoformat()
         self._lock = asyncio.Lock()
+        self.event_count = 0
+        self.completed = False
         # Initialize log file with metadata
         os.makedirs("outputs", exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -110,7 +115,11 @@ class CustomLogsHandler:
         """Store log data and send to websocket"""
         # Send to websocket for real-time display
         if self.websocket:
-            await self.websocket.send_json(data)
+            try:
+                await self.websocket.send_json(data)
+            except Exception:
+                logger.warning("WebSocket client disconnected, disabling live streaming")
+                self.websocket = None
 
         event_timestamp = datetime.now().isoformat()
         async with self._lock:
@@ -138,6 +147,8 @@ class CustomLogsHandler:
                     "event_type": "content_update",
                     "data": data,
                 })
+
+            self.event_count += 1
 
             # Keep an always-updated snapshot in both legacy and per-research paths
             self._log_data["updated_at"] = event_timestamp
@@ -218,6 +229,16 @@ async def handle_start_command(websocket, data: str, manager):
 
     # Create logs handler with websocket and task
     logs_handler = CustomLogsHandler(websocket, task)
+
+    # Register in active tasks so reconnecting clients can find it
+    _active_tasks[logs_handler.log_id] = logs_handler
+
+    # Send task_id to client so it can reconnect if disconnected
+    try:
+        await websocket.send_json({"type": "task_id", "output": logs_handler.log_id})
+    except Exception:
+        pass
+
     # Initialize log content with query
     await logs_handler.send_json({
         "query": task,
@@ -228,39 +249,127 @@ async def handle_start_command(websocket, data: str, manager):
 
     sanitized_filename = sanitize_filename(f"task_{int(time.time())}_{task}")
 
-    report = await manager.start_streaming(
-        task,
-        report_type,
-        report_source,
-        source_urls,
-        document_urls,
-        tone,
-        websocket,
-        headers,
-        query_domains,
-        mcp_enabled,
-        mcp_strategy,
-        mcp_configs,
-        model_config,
-        advanced_settings,
-    )
-    report = str(report)
-    file_paths = await generate_report_files(report, sanitized_filename)
-    # Add JSON log path to file_paths
-    file_paths["json"] = os.path.relpath(logs_handler.log_file)
-    
-    # Save to database
-    db.save_research(
-        id=sanitized_filename,
-        task=task,
-        report_type=report_type,
-        report_source=report_source,
-        tone=tone,
-        report_content=str(report),
-        file_paths=file_paths
-    )
-    
-    await send_file_paths(websocket, file_paths)
+    try:
+        report = await manager.start_streaming(
+            task,
+            report_type,
+            report_source,
+            source_urls,
+            document_urls,
+            tone,
+            websocket,
+            headers,
+            query_domains,
+            mcp_enabled,
+            mcp_strategy,
+            mcp_configs,
+            model_config,
+            advanced_settings,
+            logs_handler=logs_handler,
+        )
+        report = str(report)
+        file_paths = await generate_report_files(report, sanitized_filename)
+        # Add JSON log path to file_paths
+        file_paths["json"] = os.path.relpath(logs_handler.log_file)
+
+        # Save to database
+        db.save_research(
+            id=sanitized_filename,
+            task=task,
+            report_type=report_type,
+            report_source=report_source,
+            tone=tone,
+            report_content=str(report),
+            file_paths=file_paths
+        )
+
+        await send_file_paths(logs_handler, file_paths)
+    finally:
+        logs_handler.completed = True
+        _active_tasks.pop(logs_handler.log_id, None)
+
+
+async def handle_reconnect_command(websocket, data: str):
+    """Handle a client reconnecting to a running or completed research task."""
+    try:
+        json_data = json.loads(data[10:])  # Remove "reconnect " prefix
+        log_id = json_data.get("log_id", "")
+        last_event_index = json_data.get("last_event_index", 0)
+    except (json.JSONDecodeError, IndexError):
+        await websocket.send_json({
+            "type": "error",
+            "content": "error",
+            "output": "Invalid reconnect format"
+        })
+        return
+
+    logger.info(f"Reconnect request for task {log_id}, last_event_index={last_event_index}")
+
+    # Check active tasks first
+    handler = _active_tasks.get(log_id)
+
+    # Determine events file path
+    if handler:
+        events_file = handler.detailed_events_file
+    else:
+        # Task not active — check disk for completed task
+        events_file = os.path.join("outputs", "research_logs", log_id, "events.jsonl")
+        if not os.path.exists(events_file):
+            await websocket.send_json({
+                "type": "error",
+                "content": "error",
+                "output": f"Task {log_id} not found"
+            })
+            return
+
+    # Replay missed events from the JSONL file
+    replayed = 0
+    try:
+        with open(events_file, "r") as f:
+            for i, line in enumerate(f):
+                if i < last_event_index:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                event = json.loads(line)
+                event_data = event.get("data", {})
+                if event_data:
+                    await websocket.send_json(event_data)
+                    replayed += 1
+    except Exception as e:
+        logger.error(f"Error replaying events for {log_id}: {e}")
+
+    logger.info(f"Replayed {replayed} missed events for task {log_id}")
+
+    # If the task is still running, re-attach the websocket for future live events
+    if handler and not handler.completed:
+        handler.websocket = websocket
+        await websocket.send_json({
+            "type": "logs",
+            "content": "reconnected",
+            "output": f"Reconnected to running task. Replayed {replayed} missed events."
+        })
+        return True  # Signal that this connection is now attached to a running task
+    else:
+        # Task already completed — send completion signal
+        # Try to load final file paths from the snapshot
+        snapshot_file = os.path.join("outputs", "research_logs", log_id, "events.json")
+        if os.path.exists(snapshot_file):
+            try:
+                with open(snapshot_file, "r") as f:
+                    snapshot = json.load(f)
+                report = snapshot.get("content", {}).get("report", "")
+                if report:
+                    await websocket.send_json({"type": "report", "output": report})
+            except Exception:
+                pass
+        await websocket.send_json({
+            "type": "logs",
+            "content": "task_completed",
+            "output": f"Task already completed. Replayed {replayed} events."
+        })
+        return False  # Task is done, no live streaming
 
 
 async def handle_human_feedback(data: str):
@@ -274,7 +383,10 @@ async def generate_report_files(report: str, filename: str) -> Dict[str, str]:
 
 
 async def send_file_paths(websocket, file_paths: Dict[str, str]):
-    await websocket.send_json({"type": "path", "output": file_paths})
+    try:
+        await websocket.send_json({"type": "path", "output": file_paths})
+    except Exception:
+        logger.warning("Failed to send file paths: WebSocket disconnected")
 
 
 def get_config_dict(
@@ -349,13 +461,16 @@ async def handle_websocket_communication(websocket, manager):
                 raise
             except Exception as e:
                 logger.error(f"Error running task: {e}\n{traceback.format_exc()}")
-                await websocket.send_json(
-                    {
-                        "type": "logs",
-                        "content": "error",
-                        "output": f"Error: {e}",
-                    }
-                )
+                try:
+                    await websocket.send_json(
+                        {
+                            "type": "logs",
+                            "content": "error",
+                            "output": f"Error: {e}",
+                        }
+                    )
+                except Exception:
+                    pass
 
         return asyncio.create_task(safe_run())
 
@@ -367,6 +482,9 @@ async def handle_websocket_communication(websocket, manager):
                 
                 if data == "ping":
                     await websocket.send_text("pong")
+                elif data.strip().startswith("reconnect"):
+                    logger.info(f"Processing reconnect command")
+                    await handle_reconnect_command(websocket, data)
                 elif running_task and not running_task.done():
                     # discard any new request if a task is already running
                     logger.warning(
@@ -402,8 +520,10 @@ async def handle_websocket_communication(websocket, manager):
                 print(f"WebSocket error: {e}")
                 break
     finally:
+        # Let the research task finish even if the client disconnected,
+        # so results are persisted to disk via CustomLogsHandler.
         if running_task and not running_task.done():
-            running_task.cancel()
+            logger.info("WebSocket closed but research task still running — letting it finish in background")
 
 def extract_command_data(json_data: Dict) -> tuple:
     return (

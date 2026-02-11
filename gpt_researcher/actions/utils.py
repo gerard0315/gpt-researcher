@@ -26,7 +26,7 @@ async def stream_output(
                 'cp1252', errors='replace').decode('cp1252'))
 
     if websocket:
-        await websocket.send_json(
+        await safe_send_json(websocket,
             {"type": type, "content": content,
                 "output": output, "metadata": metadata}
         )
