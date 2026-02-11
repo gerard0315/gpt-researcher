@@ -13,6 +13,7 @@ from ..prompts import PromptFamily
 from .costs import estimate_llm_cost
 from .validators import Subtopics
 import os
+import copy
 
 
 def get_llm(llm_provider, **kwargs):
@@ -45,6 +46,28 @@ def _apply_provider_auth(
     for key, value in auth_config.items():
         if value is not None:
             provider_kwargs[key] = value
+
+
+def _build_kimi_provider_kwargs(
+    base_kwargs: dict[str, Any],
+    temperature: float | None,
+    max_tokens: int | None,
+) -> dict[str, Any]:
+    """Prepare kwargs for Kimi (Moonshot) fallback while preserving caller options."""
+    fallback_model = os.getenv("KIMI_FALLBACK_MODEL", "moonshot:kimi-k2-turbo-preview")
+    kwargs = copy.deepcopy(base_kwargs)
+    kwargs["model"] = fallback_model
+    kwargs["openai_api_key"] = os.environ.get("KIMI_API_KEY")
+    kwargs["openai_api_base"] = "https://api.moonshot.cn/v1"
+
+    if fallback_model not in NO_SUPPORT_TEMPERATURE_MODELS:
+        kwargs["temperature"] = temperature
+        kwargs["max_tokens"] = max_tokens
+    else:
+        kwargs["temperature"] = None
+        kwargs["max_tokens"] = None
+
+    return kwargs
 
 
 async def create_chat_completion(
@@ -113,7 +136,7 @@ async def create_chat_completion(
         provider_kwargs['max_tokens'] = None
 
     if llm_provider == "openai":
-        base_url = os.environ.get("OPENAI_BASE_URL", None)
+        base_url = os.environ.get("OPENAI_BASE_URL")
         if base_url and "openai_api_base" not in provider_kwargs:
             provider_kwargs['openai_api_base'] = base_url
 
@@ -148,6 +171,23 @@ async def create_chat_completion(
                 await asyncio.sleep(wait)
                 continue
             raise
+
+    # Fallback to Kimi/Moonshot if configured and primary provider failed
+    kimi_key = os.environ.get("KIMI_API_KEY")
+    if llm_provider != "moonshot" and kimi_key:
+        logging.warning(f"{llm_provider} failed after retries; falling back to Kimi.")
+        kimi_kwargs = _build_kimi_provider_kwargs(provider_kwargs, temperature, max_tokens)
+        try:
+            kimi_provider = get_llm("moonshot", **kimi_kwargs)
+            response = await kimi_provider.get_chat_response(
+                messages, stream, websocket, **kwargs
+            )
+            if cost_callback:
+                llm_costs = estimate_llm_cost(str(messages), response)
+                cost_callback(llm_costs)
+            return response
+        except Exception as kimi_exc:
+            last_error = kimi_exc
 
     logging.error(f"Failed to get response from {llm_provider} API after 3 attempts")
     raise RuntimeError(f"Failed to get response from {llm_provider} API: {last_error}")
@@ -203,12 +243,27 @@ async def construct_subtopics(
 
         chain = prompt | model | parser
 
-        output = await chain.ainvoke({
-            "task": task,
-            "data": data,
-            "subtopics": subtopics,
-            "max_subtopics": config.max_subtopics
-        }, **kwargs)
+        try:
+            output = await chain.ainvoke({
+                "task": task,
+                "data": data,
+                "subtopics": subtopics,
+                "max_subtopics": config.max_subtopics
+            }, **kwargs)
+        except Exception:
+            kimi_key = os.environ.get("KIMI_API_KEY")
+            if config.smart_llm_provider != "moonshot" and kimi_key:
+                kimi_kwargs = _build_kimi_provider_kwargs(provider_kwargs, config.temperature, config.smart_token_limit)
+                kimi_provider = get_llm("moonshot", **kimi_kwargs)
+                chain = prompt | kimi_provider.llm | parser
+                output = await chain.ainvoke({
+                    "task": task,
+                    "data": data,
+                    "subtopics": subtopics,
+                    "max_subtopics": config.max_subtopics
+                }, **kwargs)
+            else:
+                raise
 
         return output
 
