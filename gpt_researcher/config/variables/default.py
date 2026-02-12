@@ -24,6 +24,7 @@ DEFAULT_CONFIG: BaseConfig = {
     "SCRAPER": "bs",
     "MAX_SCRAPER_WORKERS": 15,
     "SCRAPER_RATE_LIMIT_DELAY": 0.0,  # Minimum seconds between scraper requests (0 = no limit, useful for API rate limiting)
+    "SCRAPER_URL_TIMEOUT": 45.0,  # Hard timeout (seconds) for scraping a single URL (0 disables).
     "MAX_SUBTOPICS": 3,
     "LANGUAGE": "english",
     "REPORT_SOURCE": "web",

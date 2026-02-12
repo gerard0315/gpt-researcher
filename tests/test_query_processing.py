@@ -96,6 +96,15 @@ def test_extract_query_anchors_reads_company_and_domain():
     assert any("Unconventional AI" in alias for alias in anchors["aliases"])
 
 
+def test_extract_query_anchors_ignores_generic_quoted_aliases():
+    query = 'Primary subject: https://unconv.ai/ Follow-up: "pay-per-use" and "official pricing"'
+
+    anchors = query_processing.extract_query_anchors(query)
+
+    assert "unconv.ai" in anchors["domains"]
+    assert all(alias.lower() not in {"pay-per-use", "official pricing"} for alias in anchors["aliases"])
+
+
 def test_ground_generated_queries_adds_identity_and_keeps_anchored_numeric_claims():
     original_query = "公司名称：Unconventional AI；官网：https://unconv.ai/"
     generated = [
@@ -121,6 +130,20 @@ def test_ground_generated_queries_prefixes_missing_anchor():
 
     assert grounded
     assert "acme" in grounded[0].lower()
+
+
+def test_ground_generated_queries_drops_prompt_artifact_blocks():
+    original_query = "Company name: Unconventional AI; website: https://unconv.ai/"
+    generated = [
+        "Primary subject (must remain fixed): https://unconv.ai/ Follow-up questions: Which specific security certifications are only obtainable under Convai enterprise tier?",
+        'site:unconv.ai (official OR about OR product)',
+    ]
+
+    grounded = query_processing.ground_generated_queries(generated, original_query, max_queries=3)
+
+    assert grounded
+    assert all("primary subject (must remain fixed)" not in item.lower() for item in grounded)
+    assert any("site:unconv.ai" in item.lower() for item in grounded)
 
 
 def test_contains_cjk_detects_chinese():

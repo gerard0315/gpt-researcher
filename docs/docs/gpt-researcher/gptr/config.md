@@ -74,6 +74,7 @@ Below is a list of current supported options:
 - **`MAX_SUBTOPICS`**: Maximum number of subtopics to generate or consider. Defaults to `3`.
 - **`SCRAPER`**: Web scraper to use for gathering information. Defaults to `bs` (BeautifulSoup). Supported values include `bs`, `browser`, `nodriver`, `web_base_loader`, `tavily_extract`, `firecrawl`, `scrape_do`, and `firecrawl_scrape_do_random`.
 - **`MAX_SCRAPER_WORKERS`**: Maximum number of concurrent scraper workers per research. Defaults to `15`.
+- **`SCRAPER_URL_TIMEOUT`**: Hard timeout in seconds for scraping a single URL. If a page hangs, it is skipped and a `scrape_url_timeout` log event is emitted. Defaults to `45.0`; set to `0` to disable.
 - **`REPORT_SOURCE`**: Source for the research report data. Defaults to `web` for online research. Can be set to `doc` for local document-based research. This determines where GPT Researcher gathers its primary information from.
 - **`DOC_PATH`**: Path to read and research local documents. Defaults to `./my-docs`.
 - **`PROMPT_FAMILY`**: The family of prompts and prompt formatting to use. Defaults to prompting optimized for GPT models. See the full list of options in [enum.py](https://github.com/assafelovic/gpt-researcher/blob/master/gpt_researcher/utils/enum.py#L56).

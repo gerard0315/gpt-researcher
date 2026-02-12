@@ -4,6 +4,7 @@ import requests
 from ..utils import get_relevant_images, extract_title
 
 class WebBaseLoaderScraper:
+    DEFAULT_TIMEOUT_SECONDS = 10
 
     def __init__(self, link, session=None):
         self.link = link
@@ -22,14 +23,17 @@ class WebBaseLoaderScraper:
         try:
             from langchain_community.document_loaders import WebBaseLoader
             loader = WebBaseLoader(self.link)
-            loader.requests_kwargs = {"verify": False}
+            loader.requests_kwargs = {
+                "verify": False,
+                "timeout": self.DEFAULT_TIMEOUT_SECONDS,
+            }
             docs = loader.load()
             content = ""
 
             for doc in docs:
                 content += doc.page_content
 
-            response = self.session.get(self.link)
+            response = self.session.get(self.link, timeout=self.DEFAULT_TIMEOUT_SECONDS)
             soup = BeautifulSoup(response.content, 'html.parser')
             image_urls = get_relevant_images(soup, self.link)
             

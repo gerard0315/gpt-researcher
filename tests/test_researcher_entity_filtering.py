@@ -50,3 +50,35 @@ def test_filter_results_respects_site_domain_constraint():
 
     assert "https://unconv.ai/" in kept_urls
     assert all("techfundingnews.com" not in (url or "") for url in kept_urls)
+
+
+def test_filter_results_concept_lane_preserves_exploratory_recall():
+    query = "Company name: Unconventional AI; official website: https://unconv.ai/"
+    conductor = _build_conductor(query)
+
+    results = [
+        {"href": "https://convin.ai/blog/conversational-ai-pricing", "body": "Competitor pricing analysis"},
+        {"href": "https://convai.com/pricing", "body": "Competitor enterprise pricing details"},
+        {"href": "https://techfundingnews.com/unconventional-ai-funding/", "body": "External mention of Unconventional AI"},
+    ]
+
+    filtered, metadata = conductor._filter_results_for_primary_subject(
+        query="ai voice agent competitor pricing landscape 2026",
+        search_results=results,
+        query_lane="concept",
+    )
+
+    kept_urls = [item.get("href") for item in filtered]
+    assert len(filtered) == len(results)
+    assert "https://convin.ai/blog/conversational-ai-pricing" in kept_urls
+    assert "https://convai.com/pricing" in kept_urls
+    assert metadata["selection_mode"] == "lane_passthrough"
+
+
+def test_classify_sub_query_lane_distinguishes_subject_and_concept():
+    query = "Company name: Unconventional AI; official website: https://unconv.ai/"
+    conductor = _build_conductor(query)
+
+    assert conductor._classify_sub_query_lane("site:unconv.ai founders and product") == "subject"
+    assert conductor._classify_sub_query_lane("ai accelerator market size and competitor landscape 2026") == "concept"
+    assert conductor._classify_sub_query_lane("unconv.ai pricing comparison in ai accelerator landscape") == "intersection"

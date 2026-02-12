@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Awaitable, Callable
 from colorama import Fore, Style
 
 from gpt_researcher.utils.workers import WorkerPool
@@ -10,7 +10,10 @@ logger = get_formatted_logger()
 
 
 async def scrape_urls(
-    urls, cfg: Config, worker_pool: WorkerPool
+    urls,
+    cfg: Config,
+    worker_pool: WorkerPool,
+    on_url_timeout: Callable[[str, float, str], Awaitable[None]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
     Scrapes the urls
@@ -31,7 +34,14 @@ async def scrape_urls(
     )
 
     try:
-        scraper = Scraper(urls, user_agent, cfg.scraper, worker_pool=worker_pool)
+        scraper = Scraper(
+            urls,
+            user_agent,
+            cfg.scraper,
+            worker_pool=worker_pool,
+            per_url_timeout=getattr(cfg, "scraper_url_timeout", None),
+            on_url_timeout=on_url_timeout,
+        )
         scraped_data = await scraper.run()
         for item in scraped_data:
             if 'image_urls' in item:

@@ -95,6 +95,71 @@ def test_dynamic_fallback_replaces_blocked_static_content(monkeypatch):
     assert result["image_urls"] == [{"url": "https://example.com/img.png", "score": 1}]
 
 
+def test_dynamic_fallback_chain_uses_scrape_do_when_needed(monkeypatch):
+    scraper = build_scraper("bs")
+    static_content = "Access denied. Please verify you are human."
+    scrape_do_content = "Recovered content from ScrapeDo fallback. " * 20
+    calls = []
+
+    monkeypatch.setattr(scraper, "get_scraper", lambda _: FakePrimaryScraper)
+    monkeypatch.setattr(
+        FakePrimaryScraper,
+        "scrape",
+        lambda self: (static_content, [], "Blocked page"),
+    )
+
+    async def fake_dynamic_fallback(link, session):
+        calls.append("nodriver")
+        return "", [], ""
+
+    async def fake_api_pool_fallback(link, session):
+        calls.append("api_pool")
+        return scrape_do_content, [], "ScrapeDo Title"
+
+    monkeypatch.setattr(scraper, "_run_dynamic_fallback", fake_dynamic_fallback)
+    monkeypatch.setattr(scraper, "_run_api_pool_fallback", fake_api_pool_fallback)
+
+    result = asyncio.run(
+        scraper.extract_data_from_url("https://example.com", scraper.session)
+    )
+
+    assert calls == ["nodriver", "api_pool"]
+    assert result["raw_content"] == scrape_do_content
+    assert result["title"] == "ScrapeDo Title"
+
+
+def test_dynamic_fallback_chain_stops_after_good_nodriver(monkeypatch):
+    scraper = build_scraper("bs")
+    static_content = "Enable JavaScript to continue."
+    nodriver_content = "Rendered, high-quality page content. " * 20
+    calls = []
+
+    monkeypatch.setattr(scraper, "get_scraper", lambda _: FakePrimaryScraper)
+    monkeypatch.setattr(
+        FakePrimaryScraper,
+        "scrape",
+        lambda self: (static_content, [], "Blocked page"),
+    )
+
+    async def fake_dynamic_fallback(link, session):
+        calls.append("nodriver")
+        return nodriver_content, [], "Rendered page"
+
+    async def fail_if_api_pool_called(link, session):
+        raise AssertionError("API pool fallback should not run after good NoDriver content")
+
+    monkeypatch.setattr(scraper, "_run_dynamic_fallback", fake_dynamic_fallback)
+    monkeypatch.setattr(scraper, "_run_api_pool_fallback", fail_if_api_pool_called)
+
+    result = asyncio.run(
+        scraper.extract_data_from_url("https://example.com", scraper.session)
+    )
+
+    assert calls == ["nodriver"]
+    assert result["raw_content"] == nodriver_content
+    assert result["title"] == "Rendered page"
+
+
 def test_dynamic_fallback_not_called_for_good_static_content(monkeypatch):
     scraper = build_scraper("bs")
     static_content = "Detailed static content. " * 40  # > 400 chars
@@ -145,6 +210,42 @@ def test_dynamic_fallback_rejected_when_it_looks_like_error(monkeypatch):
 
     assert result["raw_content"] == static_content
     assert result["title"] == "Thin page"
+
+
+def test_scraper_per_url_timeout_emits_url_callback(monkeypatch):
+    timed_out_urls = []
+
+    async def on_timeout(url: str, timeout_seconds: float, scraper_name: str):
+        timed_out_urls.append((url, timeout_seconds, scraper_name))
+
+    scraper = Scraper(
+        urls=["https://example.com/slow"],
+        user_agent="test-agent",
+        scraper="bs",
+        worker_pool=DummyWorkerPool(),
+        per_url_timeout=0.01,
+        on_url_timeout=on_timeout,
+    )
+
+    async def slow_extract_data_from_url(link, session):
+        await asyncio.sleep(0.2)
+        return {
+            "url": link,
+            "raw_content": "slow content",
+            "image_urls": [],
+            "title": "Slow",
+        }
+
+    monkeypatch.setattr(scraper, "extract_data_from_url", slow_extract_data_from_url)
+
+    result = asyncio.run(scraper.run())
+
+    assert result == []
+    assert len(timed_out_urls) == 1
+    url, timeout_seconds, scraper_name = timed_out_urls[0]
+    assert url == "https://example.com/slow"
+    assert timeout_seconds == 0.01
+    assert scraper_name == "bs"
 
 
 @pytest.mark.parametrize(

@@ -35,6 +35,9 @@ class ResearchConductor:
         self.max_trace_results = self._env_int("DETAILED_RESEARCH_LOG_MAX_RESULTS", 5, minimum=1)
         self.max_trace_chars = self._env_int("DETAILED_RESEARCH_LOG_MAX_CHARS", 320, minimum=80)
         self._query_anchors = extract_query_anchors(self.researcher.query or "")
+        self.subject_lane_domain_cap = self._env_int("SUBJECT_LANE_DOMAIN_CAP", 6, minimum=1)
+        self.concept_lane_domain_cap = self._env_int("CONCEPT_LANE_DOMAIN_CAP", 3, minimum=1)
+        self.intersection_lane_domain_cap = self._env_int("INTERSECTION_LANE_DOMAIN_CAP", 4, minimum=1)
         # Track search-result URLs we have already surfaced to avoid re-scraping/logging duplicates
         self.seen_search_urls: set[str] = set()
 
@@ -125,6 +128,61 @@ class ResearchConductor:
             return []
         return [token for token in re.findall(r"[a-z0-9]+", alias.lower()) if len(token) >= 3]
 
+    @staticmethod
+    def _score_to_confidence(score: int) -> str:
+        if score >= 8:
+            return "high"
+        if score >= 4:
+            return "medium"
+        if score > 0:
+            return "low"
+        return "none"
+
+    def _query_contains_anchor(self, query: str) -> bool:
+        lowered = (query or "").lower()
+        anchor_domains = self._query_anchors.get("domains", [])
+        anchor_aliases = self._query_anchors.get("aliases", [])
+
+        for domain in anchor_domains:
+            root = domain.split(".")[0]
+            if domain in lowered or f"site:{domain}" in lowered:
+                return True
+            if len(root) >= 4 and root in lowered:
+                return True
+
+        for alias in anchor_aliases:
+            alias_lower = alias.lower().strip()
+            if alias_lower and alias_lower in lowered:
+                return True
+            tokens = self._alias_tokens(alias_lower)
+            if len(tokens) >= 2 and all(token in lowered for token in tokens):
+                return True
+
+        return False
+
+    def _classify_sub_query_lane(self, query: str) -> str:
+        lowered = (query or "").lower()
+        has_anchor = self._query_contains_anchor(query)
+        concept_markers = (
+            "market", "industry", "landscape", "competitor", "competition",
+            "compare", "comparison", "benchmark", "pricing", "valuation",
+            "tam", "sam", "som", "adoption", "regulation", "supply chain",
+        )
+        has_concept_signal = any(marker in lowered for marker in concept_markers)
+
+        if has_anchor and has_concept_signal:
+            return "intersection"
+        if has_anchor:
+            return "subject"
+        return "concept"
+
+    def _domain_cap_for_lane(self, query_lane: str) -> int:
+        if query_lane == "subject":
+            return self.subject_lane_domain_cap
+        if query_lane == "intersection":
+            return self.intersection_lane_domain_cap
+        return self.concept_lane_domain_cap
+
     def _score_result_subject_relevance(
         self,
         query: str,
@@ -184,11 +242,14 @@ class ResearchConductor:
         self,
         query: str,
         search_results: list[dict[str, Any]],
+        query_lane: str = "subject",
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         anchors = self._query_anchors
         has_anchors = bool(anchors.get("domains") or anchors.get("aliases"))
         if not has_anchors:
             return search_results, {
+                "query_lane": query_lane,
+                "selection_mode": "no_anchor_passthrough",
                 "anchors_present": False,
                 "original_count": len(search_results),
                 "kept_count": len(search_results),
@@ -207,21 +268,27 @@ class ResearchConductor:
             score, reasons = self._score_result_subject_relevance(query, result, anchors)
             scored_results.append((score, reasons, result))
 
-        kept = [result for score, _, result in scored_results if score >= 3]
+        strict_subject_filter = query_lane == "subject"
+        kept: list[dict[str, Any]]
         fallback_used = "none"
+        selection_mode = "strict_subject_filter" if strict_subject_filter else "lane_passthrough"
 
-        if not kept:
-            positive = sorted(
-                [entry for entry in scored_results if entry[0] > 0],
-                key=lambda item: item[0],
-                reverse=True,
-            )
-            if positive:
-                kept = [result for _, _, result in positive[:3]]
-                fallback_used = "positive_score_fallback"
-            else:
-                kept = []
-                fallback_used = "drop_all_no_anchor_match"
+        if strict_subject_filter:
+            kept = [result for score, _, result in scored_results if score >= 3]
+            if not kept:
+                positive = sorted(
+                    [entry for entry in scored_results if entry[0] > 0],
+                    key=lambda item: item[0],
+                    reverse=True,
+                )
+                if positive:
+                    kept = [result for _, _, result in positive[:3]]
+                    fallback_used = "positive_score_fallback"
+                else:
+                    kept = []
+                    fallback_used = "drop_all_no_anchor_match"
+        else:
+            kept = [result for _, _, result in scored_results]
 
         kept_urls = [
             str(item.get("href") or item.get("url") or "")
@@ -235,6 +302,8 @@ class ResearchConductor:
         top_scored = sorted(scored_results, key=lambda item: item[0], reverse=True)[:self.max_trace_results]
 
         return kept, {
+            "query_lane": query_lane,
+            "selection_mode": selection_mode,
             "anchors_present": True,
             "anchor_domains": anchors.get("domains", [])[:3],
             "anchor_aliases": anchors.get("aliases", [])[:3],
@@ -247,6 +316,7 @@ class ResearchConductor:
             "top_scored": [
                 {
                     "score": score,
+                    "entity_match_confidence": self._score_to_confidence(score),
                     "url": str(result.get("href") or result.get("url") or ""),
                     "reasons": reasons,
                 }
@@ -730,10 +800,12 @@ class ResearchConductor:
             scraped_data = []
         if query_domains is None:
             query_domains = []
+        query_lane = self._classify_sub_query_lane(sub_query)
 
         if self.json_handler:
             self.json_handler.log_event("sub_query", {
                 "query": sub_query,
+                "query_lane": query_lane,
                 "scraped_data_size": len(scraped_data)
             })
         
@@ -748,7 +820,6 @@ class ResearchConductor:
         try:
             # Identify MCP retrievers
             mcp_retrievers = [r for r in self.researcher.retrievers if "mcpretriever" in r.__name__.lower()]
-            non_mcp_retrievers = [r for r in self.researcher.retrievers if "mcpretriever" not in r.__name__.lower()]
             
             # Initialize context components
             mcp_context = []
@@ -802,7 +873,7 @@ class ResearchConductor:
             
             # Get web search context using non-MCP retrievers (if no scraped data provided)
             if not scraped_data:
-                scraped_data = await self._scrape_data_by_urls(sub_query, query_domains)
+                scraped_data = await self._scrape_data_by_urls(sub_query, query_domains, query_lane=query_lane)
                 self.logger.info(f"Scraped data size: {len(scraped_data)}")
 
             # Get similar content based on scraped data
@@ -823,6 +894,7 @@ class ResearchConductor:
                     f"Answer preview captured for '{sub_query}'.",
                     {
                         "sub_query": sub_query,
+                        "query_lane": query_lane,
                         "answer_preview": answer_preview,
                         "content_size": context_length,
                         "mcp_sources": len(mcp_context),
@@ -848,6 +920,7 @@ class ResearchConductor:
                     f"No combined context found for '{sub_query}'.",
                     {
                         "sub_query": sub_query,
+                        "query_lane": query_lane,
                         "answer_preview": "",
                         "content_size": 0,
                         "mcp_sources": len(mcp_context),
@@ -865,6 +938,7 @@ class ResearchConductor:
             if combined_context and self.json_handler:
                 self.json_handler.log_event("content_found", {
                     "sub_query": sub_query,
+                    "query_lane": query_lane,
                     "content_size": len(str(combined_context)),
                     "mcp_sources": len(mcp_context),
                     "web_content": bool(web_context)
@@ -1054,8 +1128,10 @@ class ResearchConductor:
 
         return new_urls
 
-    async def _search_relevant_source_urls(self, query, query_domains: list | None = None):
+    async def _search_relevant_source_urls(self, query, query_domains: list | None = None, query_lane: str = "subject"):
         new_search_urls = []
+        lane_domain_cap = self._domain_cap_for_lane(query_lane)
+        domain_counts: dict[str, int] = {}
         if query_domains is None:
             query_domains = []
 
@@ -1079,6 +1155,7 @@ class ResearchConductor:
                     f"{retriever_class.__name__} returned {len(search_results)} results for '{query}'.",
                     {
                         "query": query,
+                        "query_lane": query_lane,
                         "retriever": retriever_class.__name__,
                         "result_count": len(search_results),
                         "results": self._build_result_previews(search_results),
@@ -1088,15 +1165,18 @@ class ResearchConductor:
                 filtered_results, filter_metadata = self._filter_results_for_primary_subject(
                     query,
                     search_results,
+                    query_lane=query_lane,
                 )
                 await self._emit_detailed_log(
                     "retriever_entity_filter_trace",
                     (
                         f"{retriever_class.__name__} kept {filter_metadata['kept_count']}/"
-                        f"{filter_metadata['original_count']} subject-aligned results for '{query}'."
+                        f"{filter_metadata['original_count']} lane-aligned results for '{query}'"
+                        f" (lane={query_lane})."
                     ),
                     {
                         "query": query,
+                        "query_lane": query_lane,
                         "retriever": retriever_class.__name__,
                         **filter_metadata,
                     },
@@ -1107,8 +1187,15 @@ class ResearchConductor:
                     href = url.get("href") or url.get("url")
                     if not href:
                         continue
+                    host = self._normalize_host(href)
+                    if host:
+                        current_count = domain_counts.get(host, 0)
+                        if current_count >= lane_domain_cap:
+                            continue
                     if href in self.seen_search_urls:
                         continue
+                    if host:
+                        domain_counts[host] = domain_counts.get(host, 0) + 1
                     self.seen_search_urls.add(href)
                     new_search_urls.append(href)
             except Exception as e:
@@ -1121,6 +1208,8 @@ class ResearchConductor:
             f"Selected {len(new_search_urls)} unique URLs for '{query}'.",
             {
                 "query": query,
+                "query_lane": query_lane,
+                "domain_cap_per_host": lane_domain_cap,
                 "url_count": len(new_search_urls),
                 "urls": new_search_urls[:self.max_trace_results],
             },
@@ -1129,7 +1218,7 @@ class ResearchConductor:
 
         return new_search_urls
 
-    async def _scrape_data_by_urls(self, sub_query, query_domains: list | None = None):
+    async def _scrape_data_by_urls(self, sub_query, query_domains: list | None = None, query_lane: str = "subject"):
         """
         Runs a sub-query across multiple retrievers and scrapes the resulting URLs.
 
@@ -1142,7 +1231,7 @@ class ResearchConductor:
         if query_domains is None:
             query_domains = []
 
-        new_search_urls = await self._search_relevant_source_urls(sub_query, query_domains)
+        new_search_urls = await self._search_relevant_source_urls(sub_query, query_domains, query_lane=query_lane)
 
         # Log the research process if verbose mode is on
         if self.researcher.verbose:

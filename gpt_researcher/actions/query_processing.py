@@ -16,6 +16,19 @@ logger = logging.getLogger(__name__)
 _URL_PATTERN = re.compile(r"https?://[^\s)]+", re.IGNORECASE)
 _DOMAIN_PATTERN = re.compile(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", re.IGNORECASE)
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
+_PROMPT_ARTIFACT_PATTERNS = [
+    re.compile(r"^\s*(primary\s+subject|previous\s+research\s+goal|follow[-\s]?up\s+questions?)\s*:", re.IGNORECASE),
+    re.compile(r"\b(hypotheses?\s+to\s+validate|must\s+remain\s+fixed)\b", re.IGNORECASE),
+    re.compile(r"^\s*you\s+are\s+(a|an)\b", re.IGNORECASE),
+    re.compile(r"^\s*research\s+task\s*:", re.IGNORECASE),
+]
+_GENERIC_ALIAS_TOKENS = {
+    "about", "official", "company", "team", "product", "pricing", "review",
+    "market", "analysis", "question", "questions", "follow", "up", "goal",
+    "goals", "research", "task", "tasks", "hypothesis", "hypotheses",
+    "enterprise", "contact", "press", "release", "news", "report",
+    "pay", "per", "use", "message", "minute", "comparison", "compare",
+}
 _COMPANY_LABEL_PATTERNS = [
     r"company\s*name\s*[:：]\s*([^\n\r;；。]+)",
     r"subject\s*[:：]\s*([^\n\r;；。]+)",
@@ -132,6 +145,69 @@ def _dedupe_preserve_order(values: List[str]) -> List[str]:
     return list(dict.fromkeys(values))
 
 
+def _is_prompt_artifact_query(query: str) -> bool:
+    if not query:
+        return True
+    normalized = " ".join(query.split())
+    lowered = normalized.lower()
+
+    for pattern in _PROMPT_ARTIFACT_PATTERNS:
+        if pattern.search(normalized):
+            return True
+
+    # Prompt dumps often contain multiple instruction labels and long prose.
+    if normalized.count(":") >= 3 and any(
+        marker in lowered
+        for marker in (
+            "primary subject",
+            "previous research goal",
+            "follow-up questions",
+            "follow up questions",
+            "hypotheses to validate",
+        )
+    ):
+        return True
+
+    return False
+
+
+def sanitize_generated_query(query: str, max_chars: int | None = None) -> str:
+    """Clean a generated query and drop malformed prompt artifacts."""
+    if not isinstance(query, str):
+        return ""
+
+    cleaned = re.sub(r"\s+", " ", query.replace("\r", " ").replace("\n", " ")).strip()
+    if not cleaned:
+        return ""
+
+    max_chars = max_chars if max_chars is not None else int(os.getenv("MAX_GENERATED_QUERY_CHARS", "320"))
+    if len(cleaned) > max_chars:
+        return ""
+
+    if _is_prompt_artifact_query(cleaned):
+        return ""
+
+    return cleaned
+
+
+def _is_generic_alias(alias: str) -> bool:
+    if not alias:
+        return True
+
+    tokens = [t for t in re.findall(r"[a-z0-9]+", alias.lower()) if t]
+    if not tokens:
+        return True
+
+    # Ignore aliases that are mostly generic instruction/feature words.
+    generic_count = sum(1 for token in tokens if token in _GENERIC_ALIAS_TOKENS)
+    if generic_count == len(tokens):
+        return True
+    if len(tokens) <= 3 and generic_count >= len(tokens) - 1:
+        return True
+
+    return False
+
+
 def extract_query_anchors(query: str) -> Dict[str, List[str]]:
     """Extract entity anchors (domains and aliases) from the original query."""
     if not query:
@@ -166,7 +242,7 @@ def extract_query_anchors(query: str) -> Dict[str, List[str]]:
     for quoted in re.findall(r"[\"“”']([^\"“”']{3,80})[\"“”']", query):
         alias = re.sub(r"\s+", " ", quoted).strip()
         # Only keep human-readable aliases (skip pure operators/noise)
-        if alias and re.search(r"[a-zA-Z]", alias):
+        if alias and re.search(r"[a-zA-Z]", alias) and not _is_generic_alias(alias):
             aliases.append(alias)
 
     domains = _dedupe_preserve_order(domains)
@@ -245,7 +321,7 @@ def ground_generated_queries(
         for query in sub_queries:
             if not isinstance(query, str):
                 continue
-            candidate = re.sub(r"\s+", " ", query).strip()
+            candidate = sanitize_generated_query(query)
             if not candidate:
                 continue
 
@@ -293,7 +369,7 @@ def _normalize_sub_queries(sub_queries: Any, fallback_query: str) -> List[str]:
 
     def _collect(item: Any) -> None:
         if isinstance(item, str):
-            query = item.strip()
+            query = sanitize_generated_query(item)
             if query:
                 collected_queries.append(query)
             return
@@ -308,7 +384,7 @@ def _normalize_sub_queries(sub_queries: Any, fallback_query: str) -> List[str]:
             for key in ("query", "search_query", "sub_query", "text"):
                 value = item.get(key)
                 if isinstance(value, str):
-                    query = value.strip()
+                    query = sanitize_generated_query(value)
                     if query:
                         collected_queries.append(query)
 
@@ -329,11 +405,11 @@ def _normalize_sub_queries(sub_queries: Any, fallback_query: str) -> List[str]:
 def _extract_query_str(item: Any) -> str:
     """Extract a clean query string from a string or dict item."""
     if isinstance(item, str):
-        return re.sub(r"\s+", " ", item).strip()
+        return sanitize_generated_query(item)
     if isinstance(item, dict):
         for key in ("query", "search_query", "text", "q"):
             if isinstance(item.get(key), str):
-                return re.sub(r"\s+", " ", item[key]).strip()
+                return sanitize_generated_query(item[key])
     return ""
 
 

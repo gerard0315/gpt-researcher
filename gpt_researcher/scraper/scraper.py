@@ -7,7 +7,9 @@ import sys
 import importlib
 import logging
 import re
+from collections.abc import Awaitable, Callable
 
+from gpt_researcher.utils.api_keys import collect_api_keys
 from gpt_researcher.utils.workers import WorkerPool
 
 from . import (
@@ -52,8 +54,17 @@ class Scraper:
     )
     _NODRIVER_AVAILABLE = None
     _NODRIVER_MISSING_LOGGED = False
+    _API_POOL_MISSING_LOGGED = False
 
-    def __init__(self, urls, user_agent, scraper, worker_pool: WorkerPool):
+    def __init__(
+        self,
+        urls,
+        user_agent,
+        scraper,
+        worker_pool: WorkerPool,
+        per_url_timeout: float | None = None,
+        on_url_timeout: Callable[[str, float, str], Awaitable[None]] | None = None,
+    ):
         """
         Initialize the Scraper class.
         Args:
@@ -67,17 +78,50 @@ class Scraper:
             self._check_pkg(self.scraper)
         self.logger = logging.getLogger(__name__)
         self.worker_pool = worker_pool
+        if per_url_timeout and per_url_timeout > 0:
+            self.per_url_timeout = float(per_url_timeout)
+        else:
+            self.per_url_timeout = None
+        self.on_url_timeout = on_url_timeout
 
     async def run(self):
         """
         Extracts the content from the links
         """
         contents = await asyncio.gather(
-            *(self.extract_data_from_url(url, self.session) for url in self.urls)
+            *(self._extract_data_with_timeout(url, self.session) for url in self.urls)
         )
 
         res = [content for content in contents if content["raw_content"] is not None]
         return res
+
+    async def _emit_timeout_event(self, link: str, timeout_seconds: float) -> None:
+        if not self.on_url_timeout:
+            return
+        try:
+            await self.on_url_timeout(link, timeout_seconds, self.scraper)
+        except Exception as callback_error:
+            self.logger.warning(
+                f"Failed to emit scrape timeout callback for {link}: {callback_error}"
+            )
+
+    async def _extract_data_with_timeout(self, link, session):
+        if not self.per_url_timeout:
+            return await self.extract_data_from_url(link, session)
+
+        try:
+            return await asyncio.wait_for(
+                self.extract_data_from_url(link, session),
+                timeout=self.per_url_timeout,
+            )
+        except asyncio.TimeoutError:
+            timeout_seconds = self.per_url_timeout
+            self.logger.error(
+                f"Scrape timeout after {timeout_seconds:.1f}s for {link} "
+                f"(scraper={self.scraper})"
+            )
+            await self._emit_timeout_event(link, timeout_seconds)
+            return {"url": link, "raw_content": None, "image_urls": [], "title": ""}
 
     def _check_pkg(self, scrapper_name: str) -> None:
         """
@@ -200,6 +244,88 @@ class Scraper:
         fallback_scraper = NoDriverScraper(link, session)
         return await self._run_scraper(fallback_scraper)
 
+    async def _run_api_pool_fallback(self, link: str, session):
+        firecrawl_keys = collect_api_keys(
+            primary_env_var="FIRECRAWL_API_KEY",
+            fallback_env_var="FIRECRAWL_API_KEY_FALLBACK",
+            list_env_var="FIRECRAWL_API_KEYS",
+        )
+        scrape_do_keys = collect_api_keys(
+            primary_env_var="SCRAPE_DO_API_KEY",
+            fallback_env_var="SCRAPE_DO_API_KEY_FALLBACK",
+            list_env_var="SCRAPE_DO_API_KEYS",
+        )
+        firecrawl_available = importlib.util.find_spec("firecrawl") is not None
+        has_firecrawl_slot = firecrawl_available and bool(firecrawl_keys)
+        has_scrape_do_slot = bool(scrape_do_keys)
+
+        if not (has_firecrawl_slot or has_scrape_do_slot):
+            if not Scraper._API_POOL_MISSING_LOGGED:
+                if firecrawl_keys and not firecrawl_available and not scrape_do_keys:
+                    self.logger.info(
+                        "Firecrawl fallback keys found but firecrawl-py is not installed, "
+                        "and no ScrapeDo keys are configured."
+                    )
+                else:
+                    self.logger.info(
+                        "Pooled API fallback is unavailable because neither Firecrawl nor "
+                        "ScrapeDo credentials are configured."
+                    )
+                Scraper._API_POOL_MISSING_LOGGED = True
+            return "", [], ""
+
+        self.logger.info(
+            f"Attempting pooled API fallback (random Firecrawl/ScrapeDo) for {link}"
+        )
+        fallback_scraper = FirecrawlScrapeDoRandom(link, session)
+        return await self._run_scraper(fallback_scraper)
+
+    async def _run_fallback_chain(
+        self,
+        link: str,
+        session,
+        content: str,
+        image_urls: list,
+        title: str,
+    ) -> tuple[str, list, str]:
+        current_content = content
+        current_image_urls = image_urls
+        current_title = title
+
+        fallback_attempts = [
+            ("NoDriver", self._run_dynamic_fallback),
+            ("ApiPool", self._run_api_pool_fallback),
+        ]
+
+        for fallback_name, fallback_runner in fallback_attempts:
+            try:
+                (
+                    fallback_content,
+                    fallback_image_urls,
+                    fallback_title,
+                ) = await fallback_runner(link, session)
+            except Exception as fallback_error:
+                self.logger.warning(
+                    f"{fallback_name} fallback failed for {link}: {fallback_error}"
+                )
+                continue
+
+            if self._is_fallback_content_better(
+                current_content, current_title, fallback_content, fallback_title
+            ):
+                self.logger.info(f"Using {fallback_name} fallback content for {link}")
+                current_content = fallback_content
+                current_image_urls = fallback_image_urls
+                current_title = fallback_title
+
+            # Stop once we have robust, non-blocked content.
+            if not self._should_try_dynamic_fallback(
+                link, current_content, current_title
+            ):
+                break
+
+        return current_content, current_image_urls, current_title
+
     async def extract_data_from_url(self, link, session):
         """
         Extracts the data from the link with logging
@@ -217,26 +343,9 @@ class Scraper:
                 content, image_urls, title = await self._run_scraper(scraper)
 
                 if self._should_try_dynamic_fallback(link, content, title):
-                    try:
-                        (
-                            fallback_content,
-                            fallback_image_urls,
-                            fallback_title,
-                        ) = await self._run_dynamic_fallback(link, session)
-                    except Exception as fallback_error:
-                        self.logger.warning(
-                            f"NoDriver fallback failed for {link}: {fallback_error}"
-                        )
-                    else:
-                        if self._is_fallback_content_better(
-                            content, title, fallback_content, fallback_title
-                        ):
-                            self.logger.info(
-                                f"Using NoDriver fallback content for {link}"
-                            )
-                            content = fallback_content
-                            image_urls = fallback_image_urls
-                            title = fallback_title
+                    content, image_urls, title = await self._run_fallback_chain(
+                        link, session, content, image_urls, title
+                    )
 
                 # Log results
                 self.logger.info(f"\nTitle: {title}")

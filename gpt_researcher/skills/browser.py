@@ -33,8 +33,19 @@ class BrowserManager:
                 self.researcher.websocket,
             )
 
+        async def _on_url_timeout(url: str, timeout_seconds: float, scraper_name: str) -> None:
+            await stream_output(
+                "logs",
+                "scrape_url_timeout",
+                f"⏱️ Scrape timeout after {timeout_seconds:.1f}s using {scraper_name} for URL: {url}",
+                self.researcher.websocket,
+            )
+
         scraped_content, images = await scrape_urls(
-            urls, self.researcher.cfg, self.worker_pool
+            urls,
+            self.researcher.cfg,
+            self.worker_pool,
+            on_url_timeout=_on_url_timeout,
         )
         self.researcher.add_research_sources(scraped_content)
         new_images = self.select_top_images(images, k=4)  # Select top 4 images

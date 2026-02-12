@@ -27,6 +27,7 @@ class BaseConfig(TypedDict):
     SCRAPER: str
     MAX_SCRAPER_WORKERS: int
     SCRAPER_RATE_LIMIT_DELAY: float
+    SCRAPER_URL_TIMEOUT: float
     MAX_SUBTOPICS: int
     REPORT_SOURCE: Union[str, None]
     DOC_PATH: str
